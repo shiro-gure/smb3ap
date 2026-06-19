@@ -41,16 +41,17 @@ unrelated upstream worlds missing optional deps; they don't affect smb3.
 
 7 airship-boss locations (Worlds 1–7), victory = Bowser's Castle, item model A
 (filler-only). **No ROM patch / no ASM** — the BizHawk client (`Client.py`) reads
-*vanilla* SMB3 US (PRG1) RAM to detect progress and writes items into RAM. The ASM
+*vanilla* SMB3 US (PRG0) RAM to detect progress and writes items into RAM. The ASM
 base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan notes).
 
 ### Playing it
 
 1. **Generate** a seed that includes a "Super Mario Bros. 3" slot, and host it
    (local AP server is fine).
-2. **BizHawk** (≥ 2.3.1): open your **vanilla SMB3 US (PRG1)** ROM
-   (file md5 `bb5c4b6d…`, PRG md5 `11bde2e7…`). Load the generic connector
-   `connector_bizhawk_generic.lua` (ships with Archipelago) via the Lua console.
+2. **BizHawk** (≥ 2.3.1): open your **vanilla SMB3 US (PRG0)** ROM — `Super Mario
+   Bros. 3 (U) (PRG0) [!]` (file md5 `bb5c4b6d…`, headerless CRC32 `a0b0b742`).
+   Load the generic connector `connector_bizhawk_generic.lua` (ships with
+   Archipelago) via the Lua console.
 3. **Client:** launch the BizHawk client from the AP launcher and connect to the
    server with your slot name. It identifies the ROM by PRG hash and attaches.
 4. Beating **Bowser's Castle** sends victory. Received items currently grant **+1
