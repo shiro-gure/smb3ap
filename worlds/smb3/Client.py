@@ -20,7 +20,7 @@ from .Locations import location_table
 from . import BASE_ID
 
 if TYPE_CHECKING:
-    from worlds._bizhawk.context import BizHawkClientContext
+    from worlds._bizhawk.context import BizHawkClientContext, BizHawkClientCommandProcessor
 
 logger = logging.getLogger("SMB3")
 
@@ -55,6 +55,22 @@ def _airship_locations_with_bits() -> Dict[int, Tuple[int, int]]:
     return out
 
 
+def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
+    """Toggle SMB3 debug logging (per-pass heartbeat + raw RAM). Usage: /smb3_debug [on|off]"""
+    handler = getattr(self.ctx, "client_handler", None)
+    if handler is None or handler.game != SMB3Client.game:
+        logger.warning("This command can only be used when playing Super Mario Bros. 3.")
+        return
+    state = state.strip().lower()
+    if state in ("on", "true", "1"):
+        handler.debug = True
+    elif state in ("off", "false", "0"):
+        handler.debug = False
+    else:
+        handler.debug = not handler.debug  # no arg = toggle
+    logger.info("SMB3 debug logging %s.", "ON" if handler.debug else "OFF")
+
+
 class SMB3Client(BizHawkClient):
     game = "Super Mario Bros. 3"
     system = "NES"
@@ -76,6 +92,13 @@ class SMB3Client(BizHawkClient):
         self.discovery = True
         # One-time "watcher is running" announcement guard.
         self._watcher_announced = False
+        # Verbose debug logging (per-pass heartbeat + raw RAM dump). Off by
+        # default — toggle at runtime with the /smb3_debug client command.
+        self.debug = False
+        # Diagnostics: last early-skip reason logged (avoid spamming), and a
+        # pass counter driving the periodic heartbeat.
+        self._last_skip: Optional[str] = None
+        self._pass = 0
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         from worlds._bizhawk import read, get_memory_size, RequestFailedError
@@ -96,6 +119,9 @@ class SMB3Client(BizHawkClient):
         ctx.game = self.game
         ctx.items_handling = 0b111  # full remote items
         ctx.want_slot_data = False
+        # Register the /smb3_debug command (idempotent across re-validations).
+        if "smb3_debug" not in ctx.command_processor.commands:
+            ctx.command_processor.commands["smb3_debug"] = cmd_smb3_debug
         return True
 
     def on_package(self, ctx: "BizHawkClientContext", cmd: str, args: dict) -> None:
@@ -106,71 +132,109 @@ class SMB3Client(BizHawkClient):
             self._watcher_announced = False
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
-        from worlds._bizhawk import read, guarded_write
+        from worlds._bizhawk import read, guarded_write, RequestFailedError
 
-        if ctx.server is None or ctx.slot is None:
+        # Log (once) why we bail before doing any work — these are the usual
+        # reasons "nothing happens": not connected to the server, or no slot yet.
+        if ctx.server is None:
+            if self._last_skip != "no server":
+                logger.warning("SMB3 watcher idle: not connected to AP server yet.")
+                self._last_skip = "no server"
             return
+        if ctx.slot is None:
+            if self._last_skip != "no slot":
+                logger.warning("SMB3 watcher idle: connected but not authenticated "
+                               "(no slot) — enter your slot name.")
+                self._last_skip = "no slot"
+            return
+        self._last_skip = None
 
-        # One-time proof the watcher is actually running (warning level so it
-        # always shows in the client UI, which may filter info).
+        # One-time proof the watcher is actually running.
         if not self._watcher_announced:
             logger.warning("SMB3 client active: watching RAM. Beat an airship to "
                            "log its Map_Completions bit (discovery mode).")
             self._watcher_announced = True
 
-        completions, rescue, lives = await read(ctx.bizhawk_ctx, [
-            (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
-            (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
-            (PLAYER_LIVES, 1, DOMAIN),
-        ])
+        try:
+            completions, rescue, lives = await read(ctx.bizhawk_ctx, [
+                (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
+                (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
+                (PLAYER_LIVES, 1, DOMAIN),
+            ])
+        except RequestFailedError as exc:
+            logger.warning("SMB3 read failed (will retry): %s", exc)
+            return
+        except Exception:
+            # An unhandled exception here would otherwise silently kill the whole
+            # BizHawk watcher loop (the context does not wrap this call), so we
+            # log it loudly and keep the loop alive.
+            logger.exception("SMB3 watcher crashed during read")
+            return
 
-        # --- discovery: log newly-set bits so we can map airships to (byte,bit) ---
-        # warning level so the line is impossible to miss in the client UI.
-        if self.discovery and self.prev_completions is not None:
-            for i in range(MAP_COMPLETIONS_LEN):
-                newly = completions[i] & ~self.prev_completions[i]
-                if newly:
-                    for bit in range(8):
-                        if newly & (1 << bit):
-                            logger.warning(
-                                "SMB3 discovery: Map_Completions[$%04X] bit %d set "
-                                "(byte_offset=%d, mask=$%02X)",
-                                MAP_COMPLETIONS + i, bit, i, 1 << bit)
-        self.prev_completions = completions
+        # Heartbeat (debug only): every N passes, prove we're alive and show what
+        # we read. Toggle with /smb3_debug. Off by default to avoid log spam.
+        self._pass += 1
+        if self.debug and self._pass % 30 == 1:
+            nonzero = [(i, completions[i]) for i in range(MAP_COMPLETIONS_LEN)
+                       if completions[i]]
+            logger.info(
+                "SMB3 heartbeat #%d: rescue=$%02X lives=$%02X "
+                "Map_Completions nonzero bytes=%s",
+                self._pass, rescue[0], lives[0],
+                ", ".join(f"[{i}]=$%02X" % v for i, v in nonzero) or "none")
 
-        # --- send location checks for mapped airship bits ---
-        checked: List[int] = []
-        for loc_id, (addr, mask) in _airship_locations_with_bits().items():
-            if loc_id in ctx.locations_checked:
-                continue
-            if completions[addr - MAP_COMPLETIONS] & mask:
-                checked.append(loc_id)
-        if checked:
-            await ctx.send_msgs([{"cmd": "LocationChecks", "locations": checked}])
+        try:
+            # --- discovery: log newly-set bits to map airships to (byte,bit) ---
+            if self.discovery and self.prev_completions is not None:
+                for i in range(MAP_COMPLETIONS_LEN):
+                    newly = completions[i] & ~self.prev_completions[i]
+                    if newly:
+                        for bit in range(8):
+                            if newly & (1 << bit):
+                                logger.warning(
+                                    "SMB3 discovery: Map_Completions[$%04X] bit %d set "
+                                    "(byte_offset=%d, mask=$%02X)",
+                                    MAP_COMPLETIONS + i, bit, i, 1 << bit)
+            self.prev_completions = completions
 
-        # --- victory --- (AP dedups server-side and sets finished_game on confirm)
-        if not ctx.finished_game and rescue[0] != 0:
-            await ctx.send_msgs([{
-                "cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+            # --- send location checks for mapped airship bits ---
+            checked: List[int] = []
+            for loc_id, (addr, mask) in _airship_locations_with_bits().items():
+                if loc_id in ctx.locations_checked:
+                    continue
+                if completions[addr - MAP_COMPLETIONS] & mask:
+                    checked.append(loc_id)
+            if checked:
+                await ctx.send_msgs([{"cmd": "LocationChecks", "locations": checked}])
 
-        # --- grant received items (POC: every filler item == +1 life) ---
-        #
-        # POC limitation: dedup state lives only on the client (no ROM scratch
-        # byte without ASM). On (re)connect the server re-sends every prior item,
-        # so we baseline applied_items to the current count the first pass and
-        # only grant items that arrive *after* that. Trade-off: items received
-        # while the client was disconnected are not retroactively granted.
-        received = ctx.items_received
-        if not self.synced:
-            self.applied_items = len(received)
-            self.synced = True
-        elif len(received) > self.applied_items:
-            to_apply = len(received) - self.applied_items
-            new_lives = min(0x99, lives[0] + to_apply)  # SMB3 caps lives display
-            ok = await guarded_write(
-                ctx.bizhawk_ctx,
-                [(PLAYER_LIVES, [new_lives], DOMAIN)],
-                [(PLAYER_LIVES, [lives[0]], DOMAIN)],  # guard: lives unchanged
-            )
-            if ok:
+            # --- victory --- (AP dedups server-side, sets finished_game on confirm)
+            if not ctx.finished_game and rescue[0] != 0:
+                logger.warning("SMB3: Player_RescuePrincess set — sending victory.")
+                await ctx.send_msgs([{
+                    "cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
+
+            # --- grant received items (POC: every filler item == +1 life) ---
+            #
+            # POC limitation: dedup state lives only on the client (no ROM scratch
+            # byte without ASM). On (re)connect the server re-sends every prior
+            # item, so we baseline applied_items the first pass and only grant
+            # items that arrive after that. Items received while disconnected are
+            # not retroactively granted.
+            received = ctx.items_received
+            if not self.synced:
                 self.applied_items = len(received)
+                self.synced = True
+            elif len(received) > self.applied_items:
+                to_apply = len(received) - self.applied_items
+                new_lives = min(0x99, lives[0] + to_apply)
+                ok = await guarded_write(
+                    ctx.bizhawk_ctx,
+                    [(PLAYER_LIVES, [new_lives], DOMAIN)],
+                    [(PLAYER_LIVES, [lives[0]], DOMAIN)],  # guard: lives unchanged
+                )
+                if ok:
+                    logger.warning("SMB3: granted %d item(s) -> lives $%02X",
+                                   to_apply, new_lives)
+                    self.applied_items = len(received)
+        except Exception:
+            logger.exception("SMB3 watcher crashed after read")
