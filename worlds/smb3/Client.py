@@ -1,9 +1,13 @@
 """BizHawk client for Super Mario Bros. 3 (client-only POC, no ROM patch).
 
-The client attaches to a *vanilla* SMB3 US (PRG1) ROM running in BizHawk via the
-generic connector, reads RAM to detect progress, and writes received items
-straight into RAM. There is no base patch — see worlds/smb3/README.md and the
-project DESIGN.md for the (deferred) ASM track.
+The client attaches to a *vanilla* SMB3 US (PRG0) ROM — `Super Mario Bros. 3 (U)
+(PRG0) [!]` — running in BizHawk via the generic connector, reads RAM to detect
+progress, and writes received items straight into RAM. There is no base patch — see
+worlds/smb3/README.md and the project DESIGN.md for the (deferred) ASM track.
+
+Note: DESIGN.md's disassembly targets PRG1, but this client runs against PRG0; it
+identifies the ROM by an internal signature (below), not a revision hash, and the
+World 1 airship bit was observed on a real PRG0 ROM.
 
 Addresses are CPU-space and read through the "System Bus" domain, which spans
 both work RAM ($0736, $078D) and battery SRAM ($7D00+) uniformly on the NES core.
@@ -32,9 +36,10 @@ PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
 DOMAIN = "System Bus"
 
-# SMB3 USA (PRG1) — the ROM the disassembly targets. md5 of the headered .nes
-# file, kept for reference / a future settings hash-check.
+# Super Mario Bros. 3 (U) (PRG0) [!] — the supported ROM.
+# Headered .nes md5, kept for reference / a future settings hash-check:
 SMB3_FILE_MD5 = "bb5c4b6d4d78c101f94bdb360af502f3"
+# Headerless ROM CRC32 a0b0b742 / SHA1 a611b90b4833b20a364bf06ee3be3b9093ea4df9.
 
 # ROM identification signature: the ASCII string "SUPER MARIO 3" is baked into the
 # PRG ROM. The "PRG ROM" domain has no iNES header, so this sits at PRG offset

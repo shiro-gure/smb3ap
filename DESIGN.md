@@ -8,9 +8,16 @@
 
 ## 1. Project goal
 
-Build an Archipelago (AP) **APWorld** for **Super Mario Bros. 3 (NES, USA Rev 2)** so SMB3 can
+Build an Archipelago (AP) **APWorld** for **Super Mario Bros. 3 (NES, USA)** so SMB3 can
 participate in an AP multiworld — its in-game events become *locations* that hand items to
 other players, and its progression can be gated by *items* received from the multiworld.
+
+> **ROM revision note (correction):** this doc originally assumed "USA Rev 2" and the
+> reference disassembly targets **PRG1**. The actual ROM in use is **`Super Mario Bros. 3
+> (U) (PRG0) [!]`** (CRC32 `a0b0b742`). The client (Track B) runs fine on PRG0 — it IDs
+> the ROM by an internal signature, not a revision hash. The deferred ASM track (Track A)
+> would need a PRG0-targeted disassembly (or a PRG1 ROM) to reassemble byte-for-byte; the
+> ~1634-byte mismatch seen when reassembling against a PRG0 ROM is this PRG0/PRG1 difference.
 
 This is greenfield: **no SMB3 APWorld exists in Archipelago today** (the `worlds/smb3` path 404s upstream).
 
@@ -244,7 +251,7 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Player_RescuePrincess` exact address | Low | Named var; grab from equates during impl. |
 | AP RAM scratch placement | Low–Med | Pick safe SRAM bytes in Track A; document in patch README. |
 | Track A toolchain (nesasm build reproducibility) | Med | Pin `disasm/nesasm.exe`; script the assemble→diff in `patch/README.md`; verify byte-for-byte vanilla reassembly first. |
-| Vanilla ROM region/rev | Med | Disasm targets **USA Rev 2**; require that exact ROM (hash-check at gen time). |
+| Vanilla ROM region/rev | Med | ROM in use is **PRG0** (`a0b0b742`); the disasm targets **PRG1**, so reassembly won't match PRG0. Client IDs the ROM by internal signature. |
 
 ---
 
