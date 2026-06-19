@@ -1,3 +1,10 @@
-# Upstream clones — reference only, not part of our work
+# Upstream clones — reference only, not part of our work.
+# (Both are embedded git repos with their own .git/, so they can't be tracked
+# from this repo anyway — our APWorld source lives at /worlds/smb3/ instead and
+# is symlinked into Archipelago/worlds/smb3 for testing. See worlds/smb3/README.md.)
 /Archipelago/
 /disasm/
+
+# Python bytecode
+__pycache__/
+*.pyc
