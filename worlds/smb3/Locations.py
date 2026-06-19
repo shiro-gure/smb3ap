@@ -20,10 +20,17 @@ class LocationData(NamedTuple):
 # (an event location, defined in Regions.py), not a check.
 #
 # Codes are offsets from base_id (applied in __init__.py) and must stay stable.
-# ram_addr/ram_bit are TODO: fill in from the discovery pass (see README.md).
+# ram_addr/ram_bit come from the discovery pass (see README.md). World 1 was
+# observed: clearing the W1 airship sets Map_Completions[$7D08] bit 0 ($01).
+# Worlds 2-7 are still TODO — fill in as each airship is observed.
 location_table: Dict[str, LocationData] = {
-    f"World {n} Airship - Boss Defeated": LocationData(n)
-    for n in range(1, 8)
+    "World 1 Airship - Boss Defeated": LocationData(1, ram_addr=0x7D08, ram_bit=0x01),
+    "World 2 Airship - Boss Defeated": LocationData(2),
+    "World 3 Airship - Boss Defeated": LocationData(3),
+    "World 4 Airship - Boss Defeated": LocationData(4),
+    "World 5 Airship - Boss Defeated": LocationData(5),
+    "World 6 Airship - Boss Defeated": LocationData(6),
+    "World 7 Airship - Boss Defeated": LocationData(7),
 }
 
 # Name of the Bowser's Castle victory location (event; code=None, no id).
