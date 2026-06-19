@@ -74,6 +74,8 @@ class SMB3Client(BizHawkClient):
         # When True, log every newly-set Map_Completions bit to help map the
         # 7 airships to (byte, bit). Toggle by editing this or via a command.
         self.discovery = True
+        # One-time "watcher is running" announcement guard.
+        self._watcher_announced = False
 
     async def validate_rom(self, ctx: "BizHawkClientContext") -> bool:
         from worlds._bizhawk import read, get_memory_size, RequestFailedError
@@ -101,12 +103,20 @@ class SMB3Client(BizHawkClient):
         # the server re-sends the full received-items list on Connected.
         if cmd == "Connected":
             self.synced = False
+            self._watcher_announced = False
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write
 
         if ctx.server is None or ctx.slot is None:
             return
+
+        # One-time proof the watcher is actually running (warning level so it
+        # always shows in the client UI, which may filter info).
+        if not self._watcher_announced:
+            logger.warning("SMB3 client active: watching RAM. Beat an airship to "
+                           "log its Map_Completions bit (discovery mode).")
+            self._watcher_announced = True
 
         completions, rescue, lives = await read(ctx.bizhawk_ctx, [
             (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -115,13 +125,14 @@ class SMB3Client(BizHawkClient):
         ])
 
         # --- discovery: log newly-set bits so we can map airships to (byte,bit) ---
+        # warning level so the line is impossible to miss in the client UI.
         if self.discovery and self.prev_completions is not None:
             for i in range(MAP_COMPLETIONS_LEN):
                 newly = completions[i] & ~self.prev_completions[i]
                 if newly:
                     for bit in range(8):
                         if newly & (1 << bit):
-                            logger.info(
+                            logger.warning(
                                 "SMB3 discovery: Map_Completions[$%04X] bit %d set "
                                 "(byte_offset=%d, mask=$%02X)",
                                 MAP_COMPLETIONS + i, bit, i, 1 << bit)
