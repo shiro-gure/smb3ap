@@ -9,7 +9,6 @@ Addresses are CPU-space and read through the "System Bus" domain, which spans
 both work RAM ($0736, $078D) and battery SRAM ($7D00+) uniformly on the NES core.
 """
 
-import hashlib
 import logging
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
@@ -33,11 +32,17 @@ PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
 DOMAIN = "System Bus"
 
-# SMB3 USA (PRG1) — the ROM the disassembly targets.
-# Headered .nes file md5 (for reference / settings hash-check):
+# SMB3 USA (PRG1) — the ROM the disassembly targets. md5 of the headered .nes
+# file, kept for reference / a future settings hash-check.
 SMB3_FILE_MD5 = "bb5c4b6d4d78c101f94bdb360af502f3"
-# PRG ROM md5 (no iNES header) — what validate_rom hashes via the "PRG ROM" domain:
-_PRG_MD5 = "11bde2e78a4c4f9e65899b4ada1b8667"
+
+# ROM identification signature: the ASCII string "SUPER MARIO 3" is baked into the
+# PRG ROM. The "PRG ROM" domain has no iNES header, so this sits at PRG offset
+# 0x3FFE3. We read just these bytes (not the whole 256KB) — the connector returns
+# each response as one socket line and asyncio's readline caps at ~64KB, so a full
+# ROM read overruns the buffer.
+_SIG_ADDR = 0x3FFE3
+_SIG_BYTES = b"SUPER MARIO 3"
 
 
 def _airship_locations_with_bits() -> Dict[int, Tuple[int, int]]:
@@ -76,13 +81,14 @@ class SMB3Client(BizHawkClient):
             size = await get_memory_size(ctx.bizhawk_ctx, "PRG ROM")
             if size < 0x40000:  # SMB3 PRG is 256KB
                 return False
-            # Hash the PRG ROM to confirm this is the SMB3 ROM we expect.
-            rom = (await read(ctx.bizhawk_ctx, [(0, 0x40000, "PRG ROM")]))[0]
+            # Read just the "SUPER MARIO 3" signature to confirm the ROM, so we
+            # don't attach to and clobber the RAM of some other NES game.
+            sig = (await read(
+                ctx.bizhawk_ctx,
+                [(_SIG_ADDR, len(_SIG_BYTES), "PRG ROM")]))[0]
         except RequestFailedError:
             return False
-        # Match the known SMB3 US (PRG1) PRG-ROM hash so we don't attach to and
-        # clobber the RAM of some other NES game.
-        if hashlib.md5(rom).hexdigest() != _PRG_MD5:
+        if sig != _SIG_BYTES:
             return False
 
         ctx.game = self.game
