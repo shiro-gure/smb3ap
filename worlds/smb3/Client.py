@@ -15,13 +15,15 @@ Addresses are CPU-space, read through the "System Bus" domain, which spans work 
 """
 
 import logging
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, AbstractSet, List, Optional
 
 from NetUtils import ClientStatus
 
 from worlds._bizhawk.client import BizHawkClient
 
-from .Locations import location_table
+from .Locations import (
+    airship_location_name, fortress_location_names, location_table,
+)
 from . import BASE_ID
 
 if TYPE_CHECKING:
@@ -31,7 +33,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-06-20-boss-latch"
+CLIENT_REV = "2026-06-20-fortresses"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -47,13 +49,22 @@ CLIENT_REV = "2026-06-20-boss-latch"
 # - World_Num ($0727): current world index, 0 = World 1 (disasm/smb3.asm:2031).
 #   The airship just beaten = World_Num + 1 (World_Num increments later, in the
 #   king's room, disasm/PRG/prg030.asm:2742 — not yet during the fight).
-LEVEL_OBJECTID = 0x0671        # 8 slots; scan for the Koopaling
+LEVEL_OBJECTID = 0x0671        # 8 slots; scan for the on-screen boss objects
 LEVEL_OBJECTID_LEN = 8
-OBJ_BOSS_KOOPALING = 0x0E
-LEVEL_GETWANDSTATE = 0x07BD    # 0 = boss alive; >= 1 = boss defeated this level
+OBJ_BOSS_KOOPALING = 0x0E      # airship Koopaling boss
+OBJ_BOOMBOOM = (0x4B, 0x4C)    # fortress Boom Boom: jumping ($4B) / flying ($4C)
+LEVEL_GETWANDSTATE = 0x07BD    # 0 = Koopaling alive; >= 1 = Koopaling defeated
 WORLD_NUM = 0x0727             # current world index (0 = World 1); for which-world
 PLAYER_RESCUE_PRINCESS = 0x078D  # non-zero after Bowser beaten -> victory
 PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
+
+# Fortress (Boom Boom) clear signal. The post-Boom-Boom "?" ball, on finishing its
+# countdown, sets Map_DoFortressFX nonzero (a 1-based per-world FX index) then the
+# map FX zeroes it (disasm/PRG/prg003.asm:1769-1773, prg010.asm:1842). Only the
+# Boom Boom ball sets it (the normal level-end card does NOT), so a 0->nonzero edge
+# is an unambiguous "a fortress was just beaten" pulse. Per-fortress identity is
+# brittle to decode, so we credit fortresses per world in clear-order (count-based).
+MAP_DOFORTRESSFX = 0x0745
 
 DOMAIN = "System Bus"
 
@@ -79,9 +90,30 @@ _SIG_ADDR = 0x3FFE3
 _SIG_BYTES = b"SUPER MARIO 3"
 
 
-def _airship_location_ids() -> dict:
-    """world number (1..7) -> AP location id, for airships."""
-    return {data.code: BASE_ID + data.code for data in location_table.values()}
+# --- Pure helpers (no RAM/network; unit-tested in test/test_fortress.py) ---
+
+def airship_location_id(world: int) -> Optional[int]:
+    """AP location id for a world's airship, or None if that world has none."""
+    name = airship_location_name(world)
+    data = location_table.get(name)
+    return None if data is None else BASE_ID + data.code
+
+
+def fortress_location_ids(world: int) -> List[int]:
+    """Ordered AP location ids for a world's fortresses (empty if none)."""
+    return [BASE_ID + location_table[name].code
+            for name in fortress_location_names(world)]
+
+
+def next_unchecked_fortress(world: int, checked: "AbstractSet[int]") -> Optional[int]:
+    """The next fortress location id for `world` not already in `checked`, in
+    clear-order — or None if all of the world's fortresses are already checked.
+    Count-based: the Nth fortress cleared in a world maps to that world's Nth
+    fortress location."""
+    for loc_id in fortress_location_ids(world):
+        if loc_id not in checked:
+            return loc_id
+    return None
 
 
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
@@ -114,6 +146,9 @@ class SMB3Client(BizHawkClient):
         # or stood down); prevents re-boost/re-log while the boss object lingers
         # post-defeat. Cleared when no boss is on screen.
         self._boss_handled = False
+        # Previous Map_DoFortressFX value, to detect the 0->nonzero fortress-clear
+        # edge. None until baselined on the first watcher pass after connect.
+        self._prev_fortress_fx: Optional[int] = None
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -163,6 +198,7 @@ class SMB3Client(BizHawkClient):
             # Reset boss-fight state; poll rate restores to normal next pass.
             self._boss_active = False
             self._boss_handled = False
+            self._prev_fortress_fx = None
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -187,17 +223,19 @@ class SMB3Client(BizHawkClient):
         # so a stale apworld on the play machine is obvious in the log.
         if not self._watcher_announced:
             logger.warning("SMB3 client active (build %s): watching RAM. Beat an "
-                           "airship (or Bowser) to send checks.", CLIENT_REV)
+                           "airship, fortress, or Bowser to send checks.", CLIENT_REV)
             self._watcher_announced = True
 
         try:
-            object_ids, wand_state, world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
-                (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
-                (LEVEL_GETWANDSTATE, 1, DOMAIN),
-                (WORLD_NUM, 1, DOMAIN),
-                (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
-                (PLAYER_LIVES, 1, DOMAIN),
-            ])
+            object_ids, wand_state, fortress_fx, world_num, rescue, lives = \
+                await read(ctx.bizhawk_ctx, [
+                    (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
+                    (LEVEL_GETWANDSTATE, 1, DOMAIN),
+                    (MAP_DOFORTRESSFX, 1, DOMAIN),
+                    (WORLD_NUM, 1, DOMAIN),
+                    (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
+                    (PLAYER_LIVES, 1, DOMAIN),
+                ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
             return
@@ -209,6 +247,8 @@ class SMB3Client(BizHawkClient):
             return
 
         koopaling_on_screen = OBJ_BOSS_KOOPALING in object_ids
+        boomboom_on_screen = any(b in object_ids for b in OBJ_BOOMBOOM)
+        boss_on_screen = koopaling_on_screen or boomboom_on_screen
 
         # Heartbeat (debug only): every N passes, prove we're alive and show what
         # we read. Toggle with /smb3_debug. Off by default to avoid log spam.
@@ -216,51 +256,69 @@ class SMB3Client(BizHawkClient):
         if self.debug and self._pass % 30 == 1:
             logger.info(
                 "SMB3 heartbeat #%d: World_Num=$%02X (world %d) koopaling=%s "
-                "wand_state=$%02X rescue=$%02X lives=$%02X",
+                "boomboom=%s wand_state=$%02X fortress_fx=$%02X rescue=$%02X lives=$%02X",
                 self._pass, world_num[0], world_num[0] + 1, koopaling_on_screen,
-                wand_state[0], rescue[0], lives[0])
+                boomboom_on_screen, wand_state[0], fortress_fx[0], rescue[0], lives[0])
 
         try:
-            # --- airship checks via the Koopaling boss fight ---
-            # Adaptive polling: when a Koopaling ($0E) appears in Level_ObjectID we
-            # boost the poll rate (the defeat state is brief). While boosted, if
-            # Level_GetWandState >= 1 the boss was defeated -> credit the airship
-            # (world = World_Num + 1; World_Num hasn't incremented yet). If the
-            # Koopaling leaves without that (e.g. the player died), just stand down.
-            # Dedup via ctx.checked_locations, so re-entering a beaten airship or a
-            # reconnect won't double-send.
-            #
-            # Per-encounter latch: the Koopaling object lingers on screen after the
-            # defeat (wand/vanish sequence), so we mark the encounter "handled" once
-            # we credit it (or stand down) and don't re-boost/re-log until the boss
-            # object actually leaves the screen. self._boss_handled tracks that.
-            if not koopaling_on_screen:
-                # No boss present: clean slate for the next encounter, and ensure
-                # we're back at the normal poll rate.
+            # --- adaptive poll-rate boost while ANY boss is on screen ---
+            # A Koopaling ($0E) or Boom Boom ($4B/$4C) on screen means we're in a
+            # boss fight whose clear signal is brief, so boost the poll rate. The
+            # boss object lingers after defeat, so latch per-encounter (_boss_handled)
+            # to boost+log only once and not re-trigger until the boss leaves.
+            if not boss_on_screen:
+                # No boss present: clean slate; ensure normal poll rate.
                 if self._boss_active or self._boss_handled:
                     self._boss_active = False
                     self._boss_handled = False
                     ctx.watcher_timeout = POLL_NORMAL
-            elif not self._boss_handled:
-                if not self._boss_active:
-                    self._boss_active = True
-                    ctx.watcher_timeout = POLL_BOOST
-                    logger.info("SMB3: Koopaling on screen — boosting poll rate.")
-                if wand_state[0] >= 1:
-                    world = world_num[0] + 1  # 1-indexed world whose airship this is
-                    loc_id = _airship_location_ids().get(world)
-                    if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
-                            and loc_id not in ctx.checked_locations:
-                        logger.warning("SMB3: World %d Koopaling defeated "
-                                       "(wand_state=$%02X), sending check %d",
-                                       world, wand_state[0], loc_id)
-                        await ctx.send_msgs(
-                            [{"cmd": "LocationChecks", "locations": [loc_id]}])
-                    # Handled this encounter; wait for the boss to leave before re-
-                    # engaging. Drop back to the normal poll rate now.
-                    self._boss_handled = True
-                    self._boss_active = False
-                    ctx.watcher_timeout = POLL_NORMAL
+            elif not self._boss_handled and not self._boss_active:
+                self._boss_active = True
+                ctx.watcher_timeout = POLL_BOOST
+                logger.info("SMB3: boss on screen (koopaling=%s boomboom=%s) — "
+                            "boosting poll rate.", koopaling_on_screen, boomboom_on_screen)
+
+            # --- airship check via the Koopaling defeat state ---
+            # Level_GetWandState >= 1 == Koopaling beaten; world = World_Num + 1
+            # (World_Num increments later, in the king's room). Dedup via
+            # checked_locations. Latch so the lingering Koopaling doesn't refire.
+            if koopaling_on_screen and not self._boss_handled and wand_state[0] >= 1:
+                world = world_num[0] + 1
+                loc_id = airship_location_id(world)
+                if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
+                        and loc_id not in ctx.checked_locations:
+                    logger.warning("SMB3: World %d Koopaling defeated "
+                                   "(wand_state=$%02X), sending check %d",
+                                   world, wand_state[0], loc_id)
+                    await ctx.send_msgs(
+                        [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                self._boss_handled = True
+                self._boss_active = False
+                ctx.watcher_timeout = POLL_NORMAL
+
+            # --- fortress check via the Map_DoFortressFX edge ---
+            # Set nonzero only by the post-Boom-Boom "?" ball on fortress clear, then
+            # zeroed by the map FX — so a 0->nonzero edge == a fortress was just
+            # beaten in the current world. Credit that world's next uncredited
+            # fortress (count-based, clear-order). Baseline _prev on connect so the
+            # transient pulse fires once on its rising edge.
+            cur_fx = fortress_fx[0]
+            if self._prev_fortress_fx is None:
+                self._prev_fortress_fx = cur_fx
+            elif self._prev_fortress_fx == 0 and cur_fx != 0:
+                world = world_num[0] + 1  # World_Num not yet incremented at clear
+                loc_id = next_unchecked_fortress(world, ctx.checked_locations)
+                if loc_id is not None:
+                    logger.warning("SMB3: World %d fortress cleared "
+                                   "(fortress_fx=$%02X), sending check %d",
+                                   world, cur_fx, loc_id)
+                    await ctx.send_msgs(
+                        [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                else:
+                    logger.warning("SMB3: World %d fortress cleared but no unchecked "
+                                   "fortress location remains (fortress_fx=$%02X).",
+                                   world, cur_fx)
+            self._prev_fortress_fx = cur_fx
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
