@@ -87,9 +87,9 @@ class SMB3Client(BizHawkClient):
 
     def __init__(self) -> None:
         super().__init__()
-        # Location ids we've sent this session (dedup across the send->server-
-        # confirm window, complementing ctx.checked_locations).
-        self._sent_checks: set = set()
+        # Previous World_Num value, to detect the +1 airship-clear increment.
+        # None until baselined on the first watcher pass after connect.
+        self._prev_world: Optional[int] = None
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -135,8 +135,9 @@ class SMB3Client(BizHawkClient):
         if cmd == "Connected":
             self.synced = False
             self._watcher_announced = False
-            # Re-evaluate checks against the server's authoritative set next pass.
-            self._sent_checks.clear()
+            # Re-baseline the World_Num edge detector against current state, so a
+            # reconnect doesn't misread a stale prev value as an increment.
+            self._prev_world = None
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write, RequestFailedError
@@ -188,26 +189,27 @@ class SMB3Client(BizHawkClient):
 
         try:
             # --- airship checks via World_Num ---
-            # Beating World N's airship advances World_Num to N (0-indexed value
-            # N, i.e. "now on World N+1"). So "World k airship cleared" once
-            # World_Num >= k. Self-heals missed passes; for linear play this is
-            # exact. (Caveat: warp-whistle skips would mark skipped airships as
-            # checked without beating them — acceptable for the POC.)
-            reached = world_num[0]  # 0-indexed current world
-            new_checks: List[int] = []
-            for world, loc_id in _airship_location_ids().items():
-                if world > MAX_AIRSHIP_WORLD or reached < world:
-                    continue
-                # Skip if the server already has it, or we already sent it this
-                # session (avoids re-spamming during the send->confirm window).
-                if loc_id in ctx.checked_locations or loc_id in self._sent_checks:
-                    continue
-                new_checks.append(loc_id)
-            if new_checks:
-                logger.warning("SMB3: World_Num=%d -> sending airship checks for %s",
-                               reached, sorted(new_checks))
-                self._sent_checks.update(new_checks)
-                await ctx.send_msgs([{"cmd": "LocationChecks", "locations": new_checks}])
+            # Beating a Koopaling airship is the ONLY thing that does `INC
+            # World_Num` (+1, disasm/PRG/prg030.asm:2742). A warp whistle instead
+            # does `STA World_Num` and jumps straight to 8 (prg011.asm:456). So we
+            # only credit an airship on a live +1 increment v-1 -> v: the new value
+            # v (1-indexed) IS the world whose airship was just beaten. Multi-step
+            # jumps (warps) credit nothing.
+            #
+            # We baseline `prev` to the current value the first pass after connect,
+            # so airships beaten before connecting are not retroactively credited
+            # (we can't distinguish those from a warp). Future: World 9 hub +
+            # revisiting worlds will need a different model than World_Num edges.
+            cur = world_num[0]
+            if self._prev_world is None:
+                self._prev_world = cur
+            elif cur == self._prev_world + 1 and 1 <= cur <= MAX_AIRSHIP_WORLD:
+                loc_id = _airship_location_ids().get(cur)
+                if loc_id is not None and loc_id not in ctx.checked_locations:
+                    logger.warning("SMB3: World_Num %d -> %d (beat World %d airship), "
+                                   "sending check %d", self._prev_world, cur, cur, loc_id)
+                    await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [loc_id]}])
+            self._prev_world = cur
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
