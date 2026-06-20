@@ -4,8 +4,7 @@ Thanks for your interest! This is an [Archipelago](https://archipelago.gg) (AP)
 APWorld for **Super Mario Bros. 3 (NES, USA PRG1 / Rev A)** — the `Super Mario Bros. 3
 (U) (PRG1) [!]` ROM (headerless CRC32 `2e6301ed`, SHA1
 `bb894d104c796f69ba16587eb66c0275f5c2fc02`). It is an early client-only
-proof-of-concept — see [`DESIGN.md`](DESIGN.md) for the architecture and
-[`NEXT_STEPS.md`](NEXT_STEPS.md) for the roadmap.
+proof-of-concept — see [`DESIGN.md`](DESIGN.md) for the architecture and roadmap.
 
 > This PRG1 ROM is byte-for-byte identical to what the captainsouthbird disassembly
 > reassembles to, so the disassembly is authoritative for all RAM addresses here (and
@@ -21,8 +20,7 @@ worlds/smb3/        # the APWorld source (the only code that ships)
   Client.py         # BizHawk client: reads SMB3 RAM, sends checks, grants items
   archipelago.json  # apworld manifest
   test/             # WorldTestBase tests
-DESIGN.md           # full design + RAM research
-NEXT_STEPS.md       # roadmap / milestone brief
+DESIGN.md           # full design, RAM research + roadmap
 ```
 
 The Archipelago framework itself and the SMB3 disassembly are **not** in this repo —

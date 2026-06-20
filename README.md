@@ -6,8 +6,7 @@ become *locations* that hand items to other players.
 
 > **Status: early client-only proof-of-concept.** It generates valid seeds and a
 > BizHawk client reads a vanilla ROM's RAM to detect progress and grant items. There is
-> no ROM patch yet. See [`DESIGN.md`](DESIGN.md) for the architecture and
-> [`NEXT_STEPS.md`](NEXT_STEPS.md) for the roadmap.
+> no ROM patch yet. See [`DESIGN.md`](DESIGN.md) for the architecture and roadmap.
 
 ## What works today
 
@@ -16,17 +15,17 @@ become *locations* that hand items to other players.
 - A BizHawk client (`worlds/smb3/Client.py`) connects to a vanilla **`Super Mario
   Bros. 3 (U) (PRG1) [!]`** ROM, sends each World N airship check as you clear it, the
   victory check on beating Bowser, and grants received items as extra lives.
-- Airship clears are detected via the `World_Num` index (no per-airship flag exists in
-  the game); see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the detection details.
+- Airship clears are detected via the king's-room cinematic flag (no per-airship
+  completion flag exists in the game); see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+  detection details.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `worlds/smb3/` | the APWorld (the code that ships as a `.apworld`) |
-| `DESIGN.md` | architecture + RAM research |
-| `NEXT_STEPS.md` | roadmap / milestones |
-| `CONTRIBUTING.md` | dev setup, building/testing, and how to add airship mappings |
+| `DESIGN.md` | architecture, RAM research + roadmap |
+| `CONTRIBUTING.md` | dev setup, building/testing, and how airship detection works |
 
 The Archipelago framework and the SMB3 disassembly are reference-only and not included
 (gitignored).

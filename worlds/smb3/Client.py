@@ -30,12 +30,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("SMB3")
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
-# World_Num: current world index, 0 = World 1 .. 7 = World 8, 8 = World 9/Warp.
 # Airships have NO completion bit (the airship's Map_Completions branch is dead
-# code, disasm/PRG/prg011.asm:2010). Beating an airship routes through the king's
-# room and does `INC World_Num` (disasm/PRG/prg030.asm:2742). So "World N airship
-# cleared" == World_Num has advanced to >= N. World_Num = $0727 (disasm/smb3.asm:2031).
-WORLD_NUM = 0x0727
+# code, disasm/PRG/prg011.asm:2010). Beating an airship boss makes the player fall
+# into the king's room, which spawns OBJ_TOADANDKING and sets Cine_ToadKing (the
+# king's-room cinematic flag: 0 idle, 1 init, 2 running). That king's room loads
+# ONLY via Player_FallToKing, set ONLY by the post-boss airship vanish
+# (disasm/PRG/prg001.asm:4294) — so Cine_ToadKing is strictly post-airship and a
+# warp whistle never triggers it. During the cinematic World_Num has not yet
+# incremented (that INC happens later, disasm/PRG/prg030.asm:2742), so the world
+# just beaten = World_Num + 1.
+#   Cine_ToadKing = $05FD (disasm/smb3.asm:1794); World_Num = $0727 (:2031).
+CINE_TOADKING = 0x05FD          # king's-room cinematic active (post-airship only)
+WORLD_NUM = 0x0727             # current world index (0 = World 1); for which-world
 PLAYER_RESCUE_PRINCESS = 0x078D  # non-zero after Bowser beaten -> victory
 PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
@@ -87,9 +93,9 @@ class SMB3Client(BizHawkClient):
 
     def __init__(self) -> None:
         super().__init__()
-        # Previous World_Num value, to detect the +1 airship-clear increment.
+        # Previous Cine_ToadKing value, to detect the 0->nonzero airship edge.
         # None until baselined on the first watcher pass after connect.
-        self._prev_world: Optional[int] = None
+        self._prev_cine: Optional[int] = None
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -135,9 +141,9 @@ class SMB3Client(BizHawkClient):
         if cmd == "Connected":
             self.synced = False
             self._watcher_announced = False
-            # Re-baseline the World_Num edge detector against current state, so a
-            # reconnect doesn't misread a stale prev value as an increment.
-            self._prev_world = None
+            # Re-baseline the Cine_ToadKing edge detector against current state, so
+            # a reconnect doesn't misread a stale prev value as a fresh edge.
+            self._prev_cine = None
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write, RequestFailedError
@@ -164,7 +170,8 @@ class SMB3Client(BizHawkClient):
             self._watcher_announced = True
 
         try:
-            world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
+            cine, world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
+                (CINE_TOADKING, 1, DOMAIN),
                 (WORLD_NUM, 1, DOMAIN),
                 (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                 (PLAYER_LIVES, 1, DOMAIN),
@@ -184,32 +191,33 @@ class SMB3Client(BizHawkClient):
         self._pass += 1
         if self.debug and self._pass % 30 == 1:
             logger.info(
-                "SMB3 heartbeat #%d: World_Num=$%02X (world %d) rescue=$%02X lives=$%02X",
-                self._pass, world_num[0], world_num[0] + 1, rescue[0], lives[0])
+                "SMB3 heartbeat #%d: World_Num=$%02X (world %d) cine=$%02X "
+                "rescue=$%02X lives=$%02X",
+                self._pass, world_num[0], world_num[0] + 1, cine[0],
+                rescue[0], lives[0])
 
         try:
-            # --- airship checks via World_Num ---
-            # Beating a Koopaling airship is the ONLY thing that does `INC
-            # World_Num` (+1, disasm/PRG/prg030.asm:2742). A warp whistle instead
-            # does `STA World_Num` and jumps straight to 8 (prg011.asm:456). So we
-            # only credit an airship on a live +1 increment v-1 -> v: the new value
-            # v (1-indexed) IS the world whose airship was just beaten. Multi-step
-            # jumps (warps) credit nothing.
+            # --- airship checks via Cine_ToadKing rising edge ---
+            # Cine_ToadKing goes 0 -> nonzero only when the post-airship king's-room
+            # cinematic starts (warps never trigger it). At that moment World_Num is
+            # not yet incremented, so the world just beaten = World_Num + 1.
             #
             # We baseline `prev` to the current value the first pass after connect,
-            # so airships beaten before connecting are not retroactively credited
-            # (we can't distinguish those from a warp). Future: World 9 hub +
-            # revisiting worlds will need a different model than World_Num edges.
-            cur = world_num[0]
-            if self._prev_world is None:
-                self._prev_world = cur
-            elif cur == self._prev_world + 1 and 1 <= cur <= MAX_AIRSHIP_WORLD:
-                loc_id = _airship_location_ids().get(cur)
-                if loc_id is not None and loc_id not in ctx.checked_locations:
-                    logger.warning("SMB3: World_Num %d -> %d (beat World %d airship), "
-                                   "sending check %d", self._prev_world, cur, cur, loc_id)
+            # so an airship beaten before connecting (or a mid-cinematic connect) is
+            # not retroactively credited. Future: a World 9 hub + revisiting worlds
+            # will need a persistent per-world record rather than this edge.
+            cur_cine = cine[0]
+            if self._prev_cine is None:
+                self._prev_cine = cur_cine
+            elif self._prev_cine == 0 and cur_cine != 0:
+                world = world_num[0] + 1  # 1-indexed world just beaten
+                loc_id = _airship_location_ids().get(world)
+                if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
+                        and loc_id not in ctx.checked_locations:
+                    logger.warning("SMB3: king's-room cinematic started -> beat World "
+                                   "%d airship, sending check %d", world, loc_id)
                     await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [loc_id]}])
-            self._prev_world = cur
+            self._prev_cine = cur_cine
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:

@@ -8,3 +8,6 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Private development / resume notes — not published.
+/NEXT_STEPS.md

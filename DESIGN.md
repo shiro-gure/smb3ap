@@ -292,6 +292,24 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Map_ReturnStatus` | `$06xx` | 0 = level cleared (in-level signal) |
 | `Map_DoFortressFX` | (named var) | Phase 1: fortress toppled FX |
 | `Level_GetWandState` | (named var) | In-level Koopaling-defeat state (transient) |
+| `Cine_ToadKing` | `$05FD` | King's-room cinematic flag (0/1/2) — **airship-clear detection** (post-airship only; warp-proof) |
+| `World_Num` | `$0727` | Current world index (0 = World 1); read with `Cine_ToadKing` to get which airship was beaten (= `World_Num + 1`) |
 
 *Addresses without a hex value are named `.ds` variables in `disasm/smb3.asm`; resolve to absolute
 addresses during implementation by tracing the equate block.*
+
+---
+
+## 10. Future work (not built)
+
+- **Airship-clear detection (implemented, supersedes §5.1 for airships):** there is no
+  `Map_Completions` bit for airships (that branch is dead code, `disasm/PRG/prg011.asm:2010`).
+  The client detects a boss defeat via the king's-room cinematic flag `Cine_ToadKing` ($05FD)
+  going non-zero (`disasm/PRG/prg005.asm:4999`), crediting world `World_Num + 1`. `Map_Completions`
+  remains the channel for Phase 1 fortress checks (§5.5).
+- **Multiworld letter screen (Track A / ASM, future):** overwrite the king's-room end-of-world
+  letter text to display the AP items and recipient player names this slot *released items to* —
+  turning the post-airship letter into a "you sent X to Y" multiworld summary. Text generation is
+  `EndWorldLetter_GenerateText` (`disasm/PRG/prg030.asm:2667`); the per-suit/throne-room text tables
+  live around `KingText_Frog` (`disasm/PRG/prg027.asm:468`) and `LL_ThroneRoom`
+  (`disasm/PRG/prg014.asm:4848`). Requires the base-patch ASM track; not started.
