@@ -87,6 +87,9 @@ class SMB3Client(BizHawkClient):
 
     def __init__(self) -> None:
         super().__init__()
+        # Location ids we've sent this session (dedup across the send->server-
+        # confirm window, complementing ctx.checked_locations).
+        self._sent_checks: set = set()
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -132,6 +135,8 @@ class SMB3Client(BizHawkClient):
         if cmd == "Connected":
             self.synced = False
             self._watcher_announced = False
+            # Re-evaluate checks against the server's authoritative set next pass.
+            self._sent_checks.clear()
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write, RequestFailedError
@@ -189,15 +194,20 @@ class SMB3Client(BizHawkClient):
             # exact. (Caveat: warp-whistle skips would mark skipped airships as
             # checked without beating them — acceptable for the POC.)
             reached = world_num[0]  # 0-indexed current world
-            checked: List[int] = []
+            new_checks: List[int] = []
             for world, loc_id in _airship_location_ids().items():
-                if world <= MAX_AIRSHIP_WORLD and reached >= world \
-                        and loc_id not in ctx.locations_checked:
-                    checked.append(loc_id)
-            if checked:
+                if world > MAX_AIRSHIP_WORLD or reached < world:
+                    continue
+                # Skip if the server already has it, or we already sent it this
+                # session (avoids re-spamming during the send->confirm window).
+                if loc_id in ctx.checked_locations or loc_id in self._sent_checks:
+                    continue
+                new_checks.append(loc_id)
+            if new_checks:
                 logger.warning("SMB3: World_Num=%d -> sending airship checks for %s",
-                               reached, sorted(checked))
-                await ctx.send_msgs([{"cmd": "LocationChecks", "locations": checked}])
+                               reached, sorted(new_checks))
+                self._sent_checks.update(new_checks)
+                await ctx.send_msgs([{"cmd": "LocationChecks", "locations": new_checks}])
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
