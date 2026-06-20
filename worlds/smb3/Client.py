@@ -33,7 +33,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-06-20-fortress-panelbit"
+CLIENT_REV = "2026-06-20-newcheck-log"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -216,6 +216,16 @@ class SMB3Client(BizHawkClient):
             ctx.command_processor.commands["smb3_debug"] = cmd_smb3_debug
         return True
 
+    async def _send_check(self, ctx: "BizHawkClientContext", loc_id: int) -> None:
+        """Send a location check and log it the standard AP way (mm2 pattern):
+        record it in ctx.locations_checked (so it survives reconnects) and print a
+        human-readable 'New Check: <name> (n/total)' confirmation."""
+        ctx.locations_checked.add(loc_id)
+        name = ctx.location_names.lookup_in_game(loc_id)
+        total = len(ctx.missing_locations) + len(ctx.checked_locations)
+        logger.info("New Check: %s (%d/%d)", name, len(ctx.locations_checked), total)
+        await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [loc_id]}])
+
     def on_package(self, ctx: "BizHawkClientContext", cmd: str, args: dict) -> None:
         # Re-baseline item dedup whenever a fresh connection is established, since
         # the server re-sends the full received-items list on Connected.
@@ -312,13 +322,12 @@ class SMB3Client(BizHawkClient):
             if koopaling_on_screen and not self._boss_handled and wand_state[0] >= 1:
                 world = world_num[0] + 1
                 loc_id = airship_location_id(world)
+                already = ctx.checked_locations | ctx.locations_checked
                 if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
-                        and loc_id not in ctx.checked_locations:
-                    logger.warning("SMB3: World %d Koopaling defeated "
-                                   "(wand_state=$%02X), sending check %d",
-                                   world, wand_state[0], loc_id)
-                    await ctx.send_msgs(
-                        [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                        and loc_id not in already:
+                    logger.info("SMB3: World %d Koopaling defeated (wand_state=$%02X)",
+                                world, wand_state[0])
+                    await self._send_check(ctx, loc_id)
                 self._boss_handled = True
                 self._boss_active = False
                 ctx.watcher_timeout = POLL_NORMAL
@@ -332,13 +341,12 @@ class SMB3Client(BizHawkClient):
             # connect so a connect-while-already-cleared doesn't retro-fire.
             if fortress_cleared(self._prev_completions, completions, world_map_tile[0]):
                 world = world_num[0] + 1  # World_Num not incremented for fortresses
-                loc_id = next_unchecked_fortress(world, ctx.checked_locations)
+                already = ctx.checked_locations | ctx.locations_checked
+                loc_id = next_unchecked_fortress(world, already)
                 if loc_id is not None:
-                    logger.warning("SMB3: World %d fortress cleared "
-                                   "(map_tile=$%02X), sending check %d",
-                                   world, world_map_tile[0], loc_id)
-                    await ctx.send_msgs(
-                        [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                    logger.info("SMB3: World %d fortress cleared (map_tile=$%02X)",
+                                world, world_map_tile[0])
+                    await self._send_check(ctx, loc_id)
                 else:
                     logger.warning("SMB3: World %d fortress cleared but no unchecked "
                                    "fortress location remains (map_tile=$%02X).",
