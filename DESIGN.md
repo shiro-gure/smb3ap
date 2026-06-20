@@ -316,3 +316,10 @@ addresses during implementation by tracing the equate block.*
   `EndWorldLetter_GenerateText` (`disasm/PRG/prg030.asm:2667`); the per-suit/throne-room text tables
   live around `KingText_Frog` (`disasm/PRG/prg027.asm:468`) and `LL_ThroneRoom`
   (`disasm/PRG/prg014.asm:4848`). Requires the base-patch ASM track; not started.
+- **Alternate-exit checks + run modes (future):** make alternative level exits (such as the warp
+  whistle in 1-F, or the whistle in 5-1) into their own independent AP locations — likely gated
+  behind a "mode"/option, e.g. an **"all checks / 100%"** run vs. an **"any%"** run. The current
+  fortress detection credits the fortress clear itself (count-based via `Map_DoFortressFX`); these
+  alternate-exit items/secret areas would be *separate* checks. Detecting "got the whistle / used the
+  secret exit" likely needs its own RAM signal (e.g. the whistle inventory item / `Map_Got13Warp`
+  `$796F`, or the in-level junction state) — to be researched when this mode is built.
