@@ -33,7 +33,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-06-20-fortresses"
+CLIENT_REV = "2026-06-20-fortress-panelbit"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -49,22 +49,30 @@ CLIENT_REV = "2026-06-20-fortresses"
 # - World_Num ($0727): current world index, 0 = World 1 (disasm/smb3.asm:2031).
 #   The airship just beaten = World_Num + 1 (World_Num increments later, in the
 #   king's room, disasm/PRG/prg030.asm:2742 — not yet during the fight).
-LEVEL_OBJECTID = 0x0671        # 8 slots; scan for the on-screen boss objects
+LEVEL_OBJECTID = 0x0671        # 8 slots; scan for the on-screen Koopaling
 LEVEL_OBJECTID_LEN = 8
 OBJ_BOSS_KOOPALING = 0x0E      # airship Koopaling boss
-OBJ_BOOMBOOM = (0x4B, 0x4C)    # fortress Boom Boom: jumping ($4B) / flying ($4C)
 LEVEL_GETWANDSTATE = 0x07BD    # 0 = Koopaling alive; >= 1 = Koopaling defeated
 WORLD_NUM = 0x0727             # current world index (0 = World 1); for which-world
 PLAYER_RESCUE_PRINCESS = 0x078D  # non-zero after Bowser beaten -> victory
 PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
-# Fortress (Boom Boom) clear signal. The post-Boom-Boom "?" ball, on finishing its
-# countdown, sets Map_DoFortressFX nonzero (a 1-based per-world FX index) then the
-# map FX zeroes it (disasm/PRG/prg003.asm:1769-1773, prg010.asm:1842). Only the
-# Boom Boom ball sets it (the normal level-end card does NOT), so a 0->nonzero edge
-# is an unambiguous "a fortress was just beaten" pulse. Per-fortress identity is
-# brittle to decode, so we credit fortresses per world in clear-order (count-based).
-MAP_DOFORTRESSFX = 0x0745
+# Fortress clear signal — the persistent Map_Completions panel bit.
+# EVERY alive level completion (normal level, fortress-by-Boom-Boom, AND
+# fortress-by-secret-exit) funnels through Map_MarkLevelComplete, which sets the
+# cleared panel's bit in Map_Completions (disasm/PRG/prg011.asm:1849,4628). So a
+# 0->1 bit flip there == a level/fortress panel was just cleared, regardless of how.
+# To tell a FORTRESS clear from a normal level, check World_Map_Tile: the game sets
+# it to rubble ($60/$E3) for a fortress immediately before marking the panel
+# (disasm/PRG/prg011.asm:1845-1849; the same test the game uses, :4632-4637). This
+# bit is sticky/persistent (flips on the map during the clear animation), so we poll
+# at the normal rate and diff pass-to-pass — no adaptive polling needed. (Lock/bridge
+# FX bits also flip in Map_Completions, but never on a rubble tile, so they're
+# excluded by the tile gate; disasm/PRG/prg010.asm:1550-1567.)
+MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario completed-panel bitfield
+MAP_COMPLETIONS_LEN = 0x40
+WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
+FORT_RUBBLE_TILES = (0x60, 0xE3)  # TILE_FORTRUBBLE / TILE_ALTRUBBLE => fortress
 
 DOMAIN = "System Bus"
 
@@ -116,6 +124,25 @@ def next_unchecked_fortress(world: int, checked: "AbstractSet[int]") -> Optional
     return None
 
 
+def fortress_cleared(prev: "Optional[bytes]", cur: "bytes",
+                     world_map_tile: int) -> bool:
+    """True iff a FORTRESS panel was just cleared this watcher pass.
+
+    A fortress clear (by Boom Boom OR a secret exit) sets a Map_Completions panel
+    bit while the player stands on a rubble tile. So: some bit in `cur` went 0->1
+    vs `prev`, AND `world_map_tile` is a fortress rubble tile. `prev` None (first
+    pass / just connected) is a baseline, never a clear. Pure — unit-tested."""
+    if prev is None:
+        return False
+    if world_map_tile not in FORT_RUBBLE_TILES:
+        return False
+    # Any bit that is set in cur but was clear in prev (0 -> 1).
+    for p, c in zip(prev, cur):
+        if c & ~p:
+            return True
+    return False
+
+
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
     """Toggle SMB3 debug logging (per-pass heartbeat of World_Num/rescue/lives). Usage: /smb3_debug [on|off]"""
     handler = getattr(self.ctx, "client_handler", None)
@@ -146,9 +173,9 @@ class SMB3Client(BizHawkClient):
         # or stood down); prevents re-boost/re-log while the boss object lingers
         # post-defeat. Cleared when no boss is on screen.
         self._boss_handled = False
-        # Previous Map_DoFortressFX value, to detect the 0->nonzero fortress-clear
-        # edge. None until baselined on the first watcher pass after connect.
-        self._prev_fortress_fx: Optional[int] = None
+        # Previous Map_Completions snapshot, to detect a 0->1 panel-bit flip
+        # (fortress clear). None until baselined on the first pass after connect.
+        self._prev_completions: Optional[bytes] = None
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -198,7 +225,7 @@ class SMB3Client(BizHawkClient):
             # Reset boss-fight state; poll rate restores to normal next pass.
             self._boss_active = False
             self._boss_handled = False
-            self._prev_fortress_fx = None
+            self._prev_completions = None
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -227,11 +254,12 @@ class SMB3Client(BizHawkClient):
             self._watcher_announced = True
 
         try:
-            object_ids, wand_state, fortress_fx, world_num, rescue, lives = \
-                await read(ctx.bizhawk_ctx, [
+            object_ids, wand_state, completions, world_map_tile, world_num, \
+                rescue, lives = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
-                    (MAP_DOFORTRESSFX, 1, DOMAIN),
+                    (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
+                    (WORLD_MAP_TILE, 1, DOMAIN),
                     (WORLD_NUM, 1, DOMAIN),
                     (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                     (PLAYER_LIVES, 1, DOMAIN),
@@ -247,27 +275,27 @@ class SMB3Client(BizHawkClient):
             return
 
         koopaling_on_screen = OBJ_BOSS_KOOPALING in object_ids
-        boomboom_on_screen = any(b in object_ids for b in OBJ_BOOMBOOM)
-        boss_on_screen = koopaling_on_screen or boomboom_on_screen
 
         # Heartbeat (debug only): every N passes, prove we're alive and show what
         # we read. Toggle with /smb3_debug. Off by default to avoid log spam.
         self._pass += 1
         if self.debug and self._pass % 30 == 1:
+            completions_set = sum(bin(b).count("1") for b in completions)
             logger.info(
                 "SMB3 heartbeat #%d: World_Num=$%02X (world %d) koopaling=%s "
-                "boomboom=%s wand_state=$%02X fortress_fx=$%02X rescue=$%02X lives=$%02X",
+                "wand_state=$%02X map_tile=$%02X completions_set=%d rescue=$%02X lives=$%02X",
                 self._pass, world_num[0], world_num[0] + 1, koopaling_on_screen,
-                boomboom_on_screen, wand_state[0], fortress_fx[0], rescue[0], lives[0])
+                wand_state[0], world_map_tile[0], completions_set, rescue[0], lives[0])
 
         try:
-            # --- adaptive poll-rate boost while ANY boss is on screen ---
-            # A Koopaling ($0E) or Boom Boom ($4B/$4C) on screen means we're in a
-            # boss fight whose clear signal is brief, so boost the poll rate. The
-            # boss object lingers after defeat, so latch per-encounter (_boss_handled)
-            # to boost+log only once and not re-trigger until the boss leaves.
-            if not boss_on_screen:
-                # No boss present: clean slate; ensure normal poll rate.
+            # --- adaptive poll-rate boost while the Koopaling is on screen ---
+            # The airship clear signal (Level_GetWandState) is brief, so boost the
+            # poll rate during the fight. The Koopaling lingers after defeat, so
+            # latch per-encounter (_boss_handled) to boost+log only once and not
+            # re-trigger until it leaves. (Fortresses use the sticky Map_Completions
+            # bit and don't need a boost.)
+            if not koopaling_on_screen:
+                # No Koopaling present: clean slate; ensure normal poll rate.
                 if self._boss_active or self._boss_handled:
                     self._boss_active = False
                     self._boss_handled = False
@@ -275,8 +303,7 @@ class SMB3Client(BizHawkClient):
             elif not self._boss_handled and not self._boss_active:
                 self._boss_active = True
                 ctx.watcher_timeout = POLL_BOOST
-                logger.info("SMB3: boss on screen (koopaling=%s boomboom=%s) — "
-                            "boosting poll rate.", koopaling_on_screen, boomboom_on_screen)
+                logger.info("SMB3: Koopaling on screen — boosting poll rate.")
 
             # --- airship check via the Koopaling defeat state ---
             # Level_GetWandState >= 1 == Koopaling beaten; world = World_Num + 1
@@ -296,29 +323,27 @@ class SMB3Client(BizHawkClient):
                 self._boss_active = False
                 ctx.watcher_timeout = POLL_NORMAL
 
-            # --- fortress check via the Map_DoFortressFX edge ---
-            # Set nonzero only by the post-Boom-Boom "?" ball on fortress clear, then
-            # zeroed by the map FX — so a 0->nonzero edge == a fortress was just
-            # beaten in the current world. Credit that world's next uncredited
-            # fortress (count-based, clear-order). Baseline _prev on connect so the
-            # transient pulse fires once on its rising edge.
-            cur_fx = fortress_fx[0]
-            if self._prev_fortress_fx is None:
-                self._prev_fortress_fx = cur_fx
-            elif self._prev_fortress_fx == 0 and cur_fx != 0:
-                world = world_num[0] + 1  # World_Num not yet incremented at clear
+            # --- fortress check via the Map_Completions panel-bit diff ---
+            # A fortress clear (Boom Boom OR secret exit) flips a Map_Completions
+            # panel bit while the player is on a rubble tile. fortress_cleared()
+            # detects that 0->1 transition; we credit the current world's next
+            # uncredited fortress (count-based, clear-order). The bit is sticky, but
+            # we only act on the transition, so it fires once. Baseline _prev on
+            # connect so a connect-while-already-cleared doesn't retro-fire.
+            if fortress_cleared(self._prev_completions, completions, world_map_tile[0]):
+                world = world_num[0] + 1  # World_Num not incremented for fortresses
                 loc_id = next_unchecked_fortress(world, ctx.checked_locations)
                 if loc_id is not None:
                     logger.warning("SMB3: World %d fortress cleared "
-                                   "(fortress_fx=$%02X), sending check %d",
-                                   world, cur_fx, loc_id)
+                                   "(map_tile=$%02X), sending check %d",
+                                   world, world_map_tile[0], loc_id)
                     await ctx.send_msgs(
                         [{"cmd": "LocationChecks", "locations": [loc_id]}])
                 else:
                     logger.warning("SMB3: World %d fortress cleared but no unchecked "
-                                   "fortress location remains (fortress_fx=$%02X).",
-                                   world, cur_fx)
-            self._prev_fortress_fx = cur_fx
+                                   "fortress location remains (map_tile=$%02X).",
+                                   world, world_map_tile[0])
+            self._prev_completions = completions
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:

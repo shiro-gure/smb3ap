@@ -9,7 +9,7 @@ import unittest
 from ..Locations import FORTRESS_COUNTS
 from ..Client import (
     airship_location_id, fortress_location_ids, next_unchecked_fortress,
-    MAX_AIRSHIP_WORLD,
+    fortress_cleared, FORT_RUBBLE_TILES, MAP_COMPLETIONS_LEN, MAX_AIRSHIP_WORLD,
 )
 
 
@@ -76,6 +76,60 @@ class TestNextUncheckedFortress(unittest.TestCase):
         w5 = fortress_location_ids(5)
         # Pretend both W4 fortresses are done; W5 should still start fresh.
         self.assertEqual(next_unchecked_fortress(5, set(w4)), w5[0])
+
+
+class TestFortressCleared(unittest.TestCase):
+    """The Map_Completions panel-bit diff + rubble-tile gate (covers Boom Boom
+    AND secret-exit fortress completions)."""
+
+    RUBBLE = FORT_RUBBLE_TILES[0]      # $60
+    ALT_RUBBLE = FORT_RUBBLE_TILES[1]  # $E3
+    NORMAL_TILE = 0x80                 # a normal "complete" panel tile
+
+    def _zeros(self) -> bytes:
+        return bytes(MAP_COMPLETIONS_LEN)
+
+    def _with_bit(self, byte_index: int, mask: int) -> bytes:
+        b = bytearray(MAP_COMPLETIONS_LEN)
+        b[byte_index] = mask
+        return bytes(b)
+
+    def test_first_pass_baseline_never_fires(self) -> None:
+        # prev is None on the first pass / right after connect.
+        self.assertFalse(fortress_cleared(None, self._with_bit(4, 0x10), self.RUBBLE))
+
+    def test_bit_flip_on_rubble_is_clear(self) -> None:
+        prev = self._zeros()
+        cur = self._with_bit(4, 0x10)  # one bit went 0 -> 1
+        self.assertTrue(fortress_cleared(prev, cur, self.RUBBLE))
+
+    def test_bit_flip_on_alt_rubble_is_clear(self) -> None:
+        prev = self._zeros()
+        cur = self._with_bit(7, 0x80)
+        self.assertTrue(fortress_cleared(prev, cur, self.ALT_RUBBLE))
+
+    def test_bit_flip_on_normal_tile_is_not_fortress(self) -> None:
+        # A normal level clear flips a panel bit too, but not on a rubble tile.
+        prev = self._zeros()
+        cur = self._with_bit(4, 0x10)
+        self.assertFalse(fortress_cleared(prev, cur, self.NORMAL_TILE))
+
+    def test_no_change_is_not_clear(self) -> None:
+        snap = self._with_bit(4, 0x10)
+        self.assertFalse(fortress_cleared(snap, snap, self.RUBBLE))
+
+    def test_bit_clearing_is_not_clear(self) -> None:
+        # 1 -> 0 (e.g. a reset) must not count as a clear.
+        prev = self._with_bit(4, 0x10)
+        cur = self._zeros()
+        self.assertFalse(fortress_cleared(prev, cur, self.RUBBLE))
+
+    def test_additional_bit_alongside_existing(self) -> None:
+        # A new bit set while another stays set still counts (0->1 on the new one).
+        prev = self._with_bit(4, 0x10)
+        cur = bytearray(prev)
+        cur[6] = 0x02  # new bit in a different column
+        self.assertTrue(fortress_cleared(prev, bytes(cur), self.RUBBLE))
 
 
 if __name__ == "__main__":

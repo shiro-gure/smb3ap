@@ -92,14 +92,19 @@ re-trigger.
 (`disasm/PRG/prg001.asm:3061-3073`). On `≥ 1`, send the "World N Airship" check for the
 current world (`World_Num + 1`; `World_Num` increments only later in the king's room).
 
-**Fortresses (Boom Boom):** when Boom Boom (`$4B` jumping / `$4C` flying) is on screen,
-watch `Map_DoFortressFX` ($0745). It is set nonzero *only* by the post-Boom-Boom "?" ball
-on a fortress clear, then zeroed by the map FX (`disasm/PRG/prg003.asm:1769-1773`,
-`prg010.asm:1842`) — so a **0→nonzero edge = a fortress was just beaten** in the current
-world (`World_Num + 1`). Per-fortress identity is brittle to decode, so the client credits
-fortresses per world in **clear-order** (count-based): the Nth fortress cleared maps to that
-world's Nth fortress location. SMB3 has no Boom-Boom-bypassing fortress exit, so this one
-signal covers every completion path. Fortress counts per world: W1:1, W2:1, W3:2, W4:2,
+**Fortresses:** a fortress clear flips that fortress panel's bit in `Map_Completions`
+($7D00–$7D3F) via `Map_MarkLevelComplete` (`disasm/PRG/prg011.asm:1849,4628`). The client
+diffs `$7D00–$7D3F` each pass; on a **0→1 bit flip while `World_Map_Tile` ($00E5) is a
+fortress rubble tile** (`$60`/`$E3`), it credits the current world's next fortress
+(`World_Num + 1`). The rubble-tile check is the same test the game uses to identify a
+fortress (`disasm/PRG/prg011.asm:1845,4632`); it also excludes the lock/bridge FX bits that
+also flip in `Map_Completions` (`disasm/PRG/prg010.asm:1550-1567`), since those aren't on a
+rubble tile. This signal is **sticky** (no adaptive polling) and fires for **every**
+completion path — beating Boom Boom *and* taking a secret/alternate exit (e.g. the 1-F warp
+whistle) both run `Map_MarkLevelComplete`. (An earlier attempt used `Map_DoFortressFX`
+$0745, which only the Boom Boom "?" ball sets, so it missed secret-exit clears.) Per-fortress
+identity is brittle to decode, so crediting is **count-based clear-order**: the Nth fortress
+cleared maps to that world's Nth fortress location. Counts per world: W1:1, W2:1, W3:2, W4:2,
 W5:2, W6:3, W7:2, W8:1 (= 14).
 
 All checks dedup via `checked_locations`. Use `/smb3_debug on` to log these RAM values each

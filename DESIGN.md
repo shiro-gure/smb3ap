@@ -308,18 +308,31 @@ addresses during implementation by tracing the equate block.*
   ($0671) it boosts the poll rate, and a defeat (`Level_GetWandState` $07BD ≥ 1) credits world
   `World_Num + 1`. (An earlier attempt keyed off the king's-room cinematic flag `Cine_ToadKing`
   $05FD, but at the 0.5s poll that transient flag was missed every time — hence the
-  Koopaling-object/wand-state approach with adaptive polling.) `Map_Completions` remains the
-  channel for Phase 1 fortress checks (§5.5).
+  Koopaling-object/wand-state approach with adaptive polling.)
+- **Fortress-clear detection (implemented):** a fortress clear flips that fortress panel's bit in
+  `Map_Completions` ($7D00-$7D3F) via `Map_MarkLevelComplete` (`disasm/PRG/prg011.asm:1849,4628`).
+  The client diffs `$7D00-$7D3F` each pass and, on a 0→1 bit flip while the player is on a fortress
+  **rubble tile** (`World_Map_Tile` $00E5 ∈ {`TILE_FORTRUBBLE` $60, `TILE_ALTRUBBLE` $E3}), credits
+  the world's next fortress (count-based). This is a **sticky** signal (no adaptive polling) and —
+  crucially — fires for *every* completion path: beating Boom Boom **and** taking a secret/alternate
+  exit both run `Map_MarkLevelComplete` (`disasm/PRG/prg011.asm:1818-1849` chooses the rubble tile by
+  the panel type, not the path). An earlier attempt used `Map_DoFortressFX` ($0745), which only the
+  Boom Boom "?" ball sets — so it missed secret-exit clears (found in testing). The rubble-tile gate
+  also excludes the lock/bridge FX bits that `Map_DoFortressFX` writes
+  (`disasm/PRG/prg010.asm:1550-1567`), since those aren't on a rubble tile.
 - **Multiworld letter screen (Track A / ASM, future):** overwrite the king's-room end-of-world
   letter text to display the AP items and recipient player names this slot *released items to* —
   turning the post-airship letter into a "you sent X to Y" multiworld summary. Text generation is
   `EndWorldLetter_GenerateText` (`disasm/PRG/prg030.asm:2667`); the per-suit/throne-room text tables
   live around `KingText_Frog` (`disasm/PRG/prg027.asm:468`) and `LL_ThroneRoom`
   (`disasm/PRG/prg014.asm:4848`). Requires the base-patch ASM track; not started.
-- **Alternate-exit checks + run modes (future):** make alternative level exits (such as the warp
-  whistle in 1-F, or the whistle in 5-1) into their own independent AP locations — likely gated
-  behind a "mode"/option, e.g. an **"all checks / 100%"** run vs. an **"any%"** run. The current
-  fortress detection credits the fortress clear itself (count-based via `Map_DoFortressFX`); these
-  alternate-exit items/secret areas would be *separate* checks. Detecting "got the whistle / used the
-  secret exit" likely needs its own RAM signal (e.g. the whistle inventory item / `Map_Got13Warp`
-  `$796F`, or the in-level junction state) — to be researched when this mode is built.
+- **Alternate-exit checks + run modes (future):** **For now, completing a level — vanilla OR via a
+  secret/alternate exit — is treated as the same "level/fortress completed" event** (one check),
+  because both paths flip the same `Map_Completions` panel bit. So e.g. clearing the 1-F fortress by
+  the warp-whistle exit already fires its fortress check, same as beating Boom Boom. **Future:** make
+  the alternate exits themselves (the 1-F / 5-1 whistles, etc.) into *independent* AP locations,
+  likely behind an **"all checks / 100%"** mode vs. an **"any%"** mode. The panel-bit detector already
+  generalizes (normal-level panels flip the same bitfield with a non-rubble complete tile), so a 100%
+  mode just widens the tile filter and/or distinguishes which exit was used. Distinguishing "got the
+  whistle / used the secret exit specifically" likely needs an extra signal (whistle inventory item /
+  `Map_Got13Warp` `$796F`, or the in-level junction state) — to research when that mode is built.

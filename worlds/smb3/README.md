@@ -55,21 +55,20 @@ notes).
    Archipelago) via the Lua console.
 3. **Client:** launch the BizHawk client from the AP launcher and connect to the
    server with your slot name. It identifies the ROM by an internal signature.
-4. Beating each **World N airship** and each **fortress** (Boom Boom) sends that location
+4. Beating each **World N airship** and clearing each **fortress** sends that location
    check; beating **Bowser's Castle** sends victory. Received items currently grant **+1
    life** each (POC).
 
 ### How detection works (airships + fortresses)
 
-No persistent per-clear flag exists in SMB3, so the client detects each boss fight
-in-level by scanning the active-object list `Level_ObjectID` ($0671–$0678) and boosting its
-poll rate while a boss is on screen (latched per-encounter):
+- **Airship:** no persistent flag exists, so the client scans `Level_ObjectID` ($0671–$0678)
+  for the Koopaling (`$0E`), boosts its poll rate while it's on screen (latched per-encounter),
+  and on `Level_GetWandState` ($07BD) `≥ 1` (final hit) sends the "World N Airship" check
+  (`World_Num + 1`). Dying/leaving just restores the normal poll rate.
+- **Fortress:** a fortress clear flips that panel's bit in `Map_Completions` ($7D00–$7D3F).
+  The client diffs that block each pass; on a 0→1 flip while `World_Map_Tile` ($00E5) is a
+  fortress rubble tile (`$60`/`$E3`), it credits the world's next fortress in clear-order.
+  This sticky signal needs no poll boost and fires for **both** completion paths — beating
+  Boom Boom *and* taking a secret/alternate exit (e.g. the 1-F warp whistle).
 
-- **Airship:** Koopaling (`$0E`) on screen → on `Level_GetWandState` ($07BD) `≥ 1` (final
-  hit), send the "World N Airship" check (`World_Num + 1`).
-- **Fortress:** Boom Boom (`$4B`/`$4C`) on screen → on a 0→nonzero edge of
-  `Map_DoFortressFX` ($0745) (set only by the post-Boom-Boom "?" ball), credit the world's
-  next uncredited fortress in clear-order.
-
-Dying/leaving without a defeat just restores the normal poll rate. Run `/smb3_debug on` to
-log these values each pass.
+Run `/smb3_debug on` to log these values each pass.
