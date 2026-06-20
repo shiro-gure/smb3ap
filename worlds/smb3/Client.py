@@ -31,7 +31,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-06-20-koopaling-wandstate"
+CLIENT_REV = "2026-06-20-boss-latch"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -110,6 +110,10 @@ class SMB3Client(BizHawkClient):
         super().__init__()
         # True while a Koopaling is on screen and we've boosted the poll rate.
         self._boss_active = False
+        # True once we've handled the current on-screen boss encounter (credited
+        # or stood down); prevents re-boost/re-log while the boss object lingers
+        # post-defeat. Cleared when no boss is on screen.
+        self._boss_handled = False
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -158,6 +162,7 @@ class SMB3Client(BizHawkClient):
             self._watcher_announced = False
             # Reset boss-fight state; poll rate restores to normal next pass.
             self._boss_active = False
+            self._boss_handled = False
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -225,18 +230,22 @@ class SMB3Client(BizHawkClient):
             # Dedup via ctx.checked_locations, so re-entering a beaten airship or a
             # reconnect won't double-send.
             #
-            # TODO(before PR/merge): this re-boosts + re-logs "Koopaling on screen"
-            # every pass while the Koopaling stays on screen AFTER the check fired
-            # (it lingers for the wand/vanish sequence), spamming the log and keeping
-            # the poll boosted needlessly. Latch per-encounter: once handled, don't
-            # re-trigger until the Koopaling actually leaves. MUST suppress before
-            # opening the PR.
-            if koopaling_on_screen and not self._boss_active:
-                self._boss_active = True
-                ctx.watcher_timeout = POLL_BOOST
-                logger.info("SMB3: Koopaling on screen — boosting poll rate.")
-
-            if self._boss_active:
+            # Per-encounter latch: the Koopaling object lingers on screen after the
+            # defeat (wand/vanish sequence), so we mark the encounter "handled" once
+            # we credit it (or stand down) and don't re-boost/re-log until the boss
+            # object actually leaves the screen. self._boss_handled tracks that.
+            if not koopaling_on_screen:
+                # No boss present: clean slate for the next encounter, and ensure
+                # we're back at the normal poll rate.
+                if self._boss_active or self._boss_handled:
+                    self._boss_active = False
+                    self._boss_handled = False
+                    ctx.watcher_timeout = POLL_NORMAL
+            elif not self._boss_handled:
+                if not self._boss_active:
+                    self._boss_active = True
+                    ctx.watcher_timeout = POLL_BOOST
+                    logger.info("SMB3: Koopaling on screen — boosting poll rate.")
                 if wand_state[0] >= 1:
                     world = world_num[0] + 1  # 1-indexed world whose airship this is
                     loc_id = _airship_location_ids().get(world)
@@ -247,13 +256,11 @@ class SMB3Client(BizHawkClient):
                                        world, wand_state[0], loc_id)
                         await ctx.send_msgs(
                             [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                    # Handled this encounter; wait for the boss to leave before re-
+                    # engaging. Drop back to the normal poll rate now.
+                    self._boss_handled = True
                     self._boss_active = False
                     ctx.watcher_timeout = POLL_NORMAL
-                elif not koopaling_on_screen:
-                    # Koopaling gone without a defeat (died / left) — stand down.
-                    self._boss_active = False
-                    ctx.watcher_timeout = POLL_NORMAL
-                    logger.info("SMB3: Koopaling gone (no defeat) — normal poll rate.")
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
