@@ -1,15 +1,16 @@
 # Contributing to the SMB3 Archipelago APWorld
 
 Thanks for your interest! This is an [Archipelago](https://archipelago.gg) (AP)
-APWorld for **Super Mario Bros. 3 (NES, USA PRG0)** — the `Super Mario Bros. 3 (U)
-(PRG0) [!]` ROM (CRC32 `a0b0b742`, headerless SHA1
-`a611b90b4833b20a364bf06ee3be3b9093ea4df9`). It is an early client-only
+APWorld for **Super Mario Bros. 3 (NES, USA PRG1 / Rev A)** — the `Super Mario Bros. 3
+(U) (PRG1) [!]` ROM (headerless CRC32 `2e6301ed`, SHA1
+`bb894d104c796f69ba16587eb66c0275f5c2fc02`). It is an early client-only
 proof-of-concept — see [`DESIGN.md`](DESIGN.md) for the architecture and
 [`NEXT_STEPS.md`](NEXT_STEPS.md) for the roadmap.
 
-> Note: the reference disassembly in `DESIGN.md` targets the **PRG1** revision, so a
-> byte-for-byte reassembly will *not* match a PRG0 ROM. The current client works
-> against PRG0 (it identifies the ROM by an internal signature, not a revision hash).
+> This PRG1 ROM is byte-for-byte identical to what the captainsouthbird disassembly
+> reassembles to, so the disassembly is authoritative for all RAM addresses here (and
+> a future ASM/base-patch track would reassemble cleanly). The client identifies the
+> ROM by an internal signature, so it also tolerates PRG0, but PRG1 is supported.
 
 ## What this repo contains
 
@@ -73,20 +74,21 @@ missing manifest file."
 
 ## Playing / the BizHawk client
 
-The client (`Client.py`) attaches to a **vanilla** SMB3 US (PRG0) ROM in BizHawk via
+The client (`Client.py`) attaches to a **vanilla** SMB3 US (PRG1) ROM in BizHawk via
 the generic Lua connector — there is no ROM patch yet. BizHawk needs the
 **Lua+LuaInterface** core (NLua fails). Load the connector from your own Archipelago's
 `data/lua/connector_bizhawk_generic.lua` (it depends on sibling files). Client log
 output appears in the **Archipelago BizHawk Client window**, not BizHawk's Lua console.
 
-### Mapping airship checks (`/smb3_debug`)
+### How airship detection works
 
-The per-world airship-clear flag in `Map_Completions` is **positional** and must be
-found empirically (the disassembly has no static flag). In the client, run
-`/smb3_debug on` to enable verbose logging, beat an airship live (no save states —
-they cause bulk RAM changes that look like many clears at once), and read the logged
-`Map_Completions[$7Dxx] bit N` that flips at that moment. Record it as `ram_addr` /
-`ram_bit` for that world in `Locations.py`.
+SMB3 has **no per-airship completion flag** — beating an airship boss routes through
+the king's room and just does `INC World_Num` (`disasm/PRG/prg030.asm:2742`); the
+airship's `Map_Completions` "complete" branch is dead code (`prg011.asm:2010`). So the
+client watches **`World_Num` ($0727)**, the current world index (0 = World 1 … 7 =
+World 8), and sends the "World N Airship" check once `World_Num >= N`. This is exact
+for linear play; warp-whistle skips would mark skipped airships as cleared (acceptable
+for the POC). Use `/smb3_debug on` in the client to log `World_Num` each pass.
 
 ## Pull requests
 

@@ -12,12 +12,21 @@ Build an Archipelago (AP) **APWorld** for **Super Mario Bros. 3 (NES, USA)** so 
 participate in an AP multiworld — its in-game events become *locations* that hand items to
 other players, and its progression can be gated by *items* received from the multiworld.
 
-> **ROM revision note (correction):** this doc originally assumed "USA Rev 2" and the
-> reference disassembly targets **PRG1**. The actual ROM in use is **`Super Mario Bros. 3
-> (U) (PRG0) [!]`** (CRC32 `a0b0b742`). The client (Track B) runs fine on PRG0 — it IDs
-> the ROM by an internal signature, not a revision hash. The deferred ASM track (Track A)
-> would need a PRG0-targeted disassembly (or a PRG1 ROM) to reassemble byte-for-byte; the
-> ~1634-byte mismatch seen when reassembling against a PRG0 ROM is this PRG0/PRG1 difference.
+> **ROM revision note (correction):** this doc originally said "USA Rev 2". The supported
+> ROM is **`Super Mario Bros. 3 (U) (PRG1) [!]`** (No-Intro Rev A; headerless CRC32
+> `2e6301ed`, file md5 `86d1982f…`), which is **byte-for-byte identical** to what the
+> captainsouthbird disassembly reassembles to — so the disassembly is authoritative for
+> all addresses here, and the deferred ASM track (Track A) reassembles cleanly. (An
+> earlier PRG0 ROM differed from the disasm by ~1634 bytes — that was the PRG0/PRG1
+> difference, not a toolchain bug.)
+>
+> **Airship-detection correction:** §5.1 below proposes detecting airship clears via
+> `Map_Completions` bits. That is **wrong** — SMB3 has no airship completion bit (the
+> airship's `Map_Completions` branch is dead code, `disasm/PRG/prg011.asm:2010`). Beating
+> an airship routes through the king's room and only does `INC World_Num` ($0727,
+> `disasm/PRG/prg030.asm:2742`). The client therefore detects "World N airship cleared"
+> as `World_Num >= N`. `Map_Completions` is still relevant for the future fortress/Phase-1
+> checks (§5.5), just not for airships.
 
 This is greenfield: **no SMB3 APWorld exists in Archipelago today** (the `worlds/smb3` path 404s upstream).
 
@@ -251,7 +260,7 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Player_RescuePrincess` exact address | Low | Named var; grab from equates during impl. |
 | AP RAM scratch placement | Low–Med | Pick safe SRAM bytes in Track A; document in patch README. |
 | Track A toolchain (nesasm build reproducibility) | Med | Pin `disasm/nesasm.exe`; script the assemble→diff in `patch/README.md`; verify byte-for-byte vanilla reassembly first. |
-| Vanilla ROM region/rev | Med | ROM in use is **PRG0** (`a0b0b742`); the disasm targets **PRG1**, so reassembly won't match PRG0. Client IDs the ROM by internal signature. |
+| Vanilla ROM region/rev | Low | Resolved: ROM is **PRG1** (`2e6301ed`), byte-identical to the disasm build. Client IDs the ROM by internal signature. |
 
 ---
 

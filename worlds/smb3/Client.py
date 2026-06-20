@@ -1,20 +1,21 @@
 """BizHawk client for Super Mario Bros. 3 (client-only POC, no ROM patch).
 
-The client attaches to a *vanilla* SMB3 US (PRG0) ROM — `Super Mario Bros. 3 (U)
-(PRG0) [!]` — running in BizHawk via the generic connector, reads RAM to detect
-progress, and writes received items straight into RAM. There is no base patch — see
-worlds/smb3/README.md and the project DESIGN.md for the (deferred) ASM track.
+The client attaches to a *vanilla* SMB3 US (PRG1) ROM — `Super Mario Bros. 3 (U)
+(PRG1) [!]` (No-Intro Rev A) — running in BizHawk via the generic connector, reads
+RAM to detect progress, and writes received items straight into RAM. There is no
+base patch — see worlds/smb3/README.md and the project DESIGN.md for the (deferred)
+ASM track. This is the exact revision the captainsouthbird disassembly reassembles
+to, so the disassembly is authoritative for these addresses.
 
-Note: DESIGN.md's disassembly targets PRG1, but this client runs against PRG0; it
-identifies the ROM by an internal signature (below), not a revision hash, and the
-World 1 airship bit was observed on a real PRG0 ROM.
+The ROM is identified by an internal signature (below), so the client also tolerates
+PRG0, but PRG1 is the supported/disassembly-matching revision.
 
-Addresses are CPU-space and read through the "System Bus" domain, which spans
-both work RAM ($0736, $078D) and battery SRAM ($7D00+) uniformly on the NES core.
+Addresses are CPU-space, read through the "System Bus" domain, which spans work RAM
+($0727, $0736, $078D) uniformly on the NES core.
 """
 
 import logging
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional
 
 from NetUtils import ClientStatus
 
@@ -28,18 +29,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SMB3")
 
-# --- RAM addresses (resolved from disasm/, see plan + DESIGN.md §5) ---
-MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario persistent panel/alteration bitfield
-MAP_COMPLETIONS_LEN = 0x40     # 64 columns (covers all 4 map screens)
+# --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
+# World_Num: current world index, 0 = World 1 .. 7 = World 8, 8 = World 9/Warp.
+# Airships have NO completion bit (the airship's Map_Completions branch is dead
+# code, disasm/PRG/prg011.asm:2010). Beating an airship routes through the king's
+# room and does `INC World_Num` (disasm/PRG/prg030.asm:2742). So "World N airship
+# cleared" == World_Num has advanced to >= N. World_Num = $0727 (disasm/smb3.asm:2031).
+WORLD_NUM = 0x0727
 PLAYER_RESCUE_PRINCESS = 0x078D  # non-zero after Bowser beaten -> victory
 PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
 DOMAIN = "System Bus"
 
-# Super Mario Bros. 3 (U) (PRG0) [!] — the supported ROM.
+# Highest world that has a Koopaling airship (World 8's climax is Bowser, the goal).
+MAX_AIRSHIP_WORLD = 7
+
+# Super Mario Bros. 3 (U) (PRG1) [!] — the supported ROM.
 # Headered .nes md5, kept for reference / a future settings hash-check:
-SMB3_FILE_MD5 = "bb5c4b6d4d78c101f94bdb360af502f3"
-# Headerless ROM CRC32 a0b0b742 / SHA1 a611b90b4833b20a364bf06ee3be3b9093ea4df9.
+SMB3_FILE_MD5 = "86d1982fea7342c0af9679ddf3869d8d"
+# Headerless ROM CRC32 2e6301ed / SHA1 bb894d104c796f69ba16587eb66c0275f5c2fc02.
 
 # ROM identification signature: the ASCII string "SUPER MARIO 3" is baked into the
 # PRG ROM. The "PRG ROM" domain has no iNES header, so this sits at PRG offset
@@ -50,18 +58,13 @@ _SIG_ADDR = 0x3FFE3
 _SIG_BYTES = b"SUPER MARIO 3"
 
 
-def _airship_locations_with_bits() -> Dict[int, Tuple[int, int]]:
-    """location_id -> (ram_addr, bitmask) for airships that have been mapped.
-    Empty until the empirical discovery pass fills the bits into Locations.py."""
-    out: Dict[int, Tuple[int, int]] = {}
-    for name, data in location_table.items():
-        if data.ram_addr is not None and data.ram_bit is not None:
-            out[BASE_ID + data.code] = (data.ram_addr, data.ram_bit)
-    return out
+def _airship_location_ids() -> dict:
+    """world number (1..7) -> AP location id, for airships."""
+    return {data.code: BASE_ID + data.code for data in location_table.values()}
 
 
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
-    """Toggle SMB3 debug logging (per-pass heartbeat + raw RAM). Usage: /smb3_debug [on|off]"""
+    """Toggle SMB3 debug logging (per-pass heartbeat of World_Num/rescue/lives). Usage: /smb3_debug [on|off]"""
     handler = getattr(self.ctx, "client_handler", None)
     if handler is None or handler.game != SMB3Client.game:
         logger.warning("This command can only be used when playing Super Mario Bros. 3.")
@@ -79,26 +82,20 @@ def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> No
 class SMB3Client(BizHawkClient):
     game = "Super Mario Bros. 3"
     system = "NES"
-    # No patch file in the POC; we identify the ROM by hash in validate_rom.
+    # No patch file in the POC; we identify the ROM by signature in validate_rom.
     patch_suffix = None
 
     def __init__(self) -> None:
         super().__init__()
-        # Snapshot of Map_Completions from the previous watcher pass, so we can
-        # detect 0->1 bit transitions and (in discovery mode) log them.
-        self.prev_completions: Optional[bytes] = None
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
         # re-sent item list on (re)connect — see game_watcher.
         self.synced = False
-        # When True, log every newly-set Map_Completions bit to help map the
-        # 7 airships to (byte, bit). Toggle by editing this or via a command.
-        self.discovery = True
         # One-time "watcher is running" announcement guard.
         self._watcher_announced = False
-        # Verbose debug logging (per-pass heartbeat + raw RAM dump). Off by
-        # default — toggle at runtime with the /smb3_debug client command.
+        # Verbose debug logging (per-pass heartbeat of World_Num/rescue/lives).
+        # Off by default — toggle at runtime with the /smb3_debug client command.
         self.debug = False
         # Diagnostics: last early-skip reason logged (avoid spamming), and a
         # pass counter driving the periodic heartbeat.
@@ -156,13 +153,13 @@ class SMB3Client(BizHawkClient):
 
         # One-time proof the watcher is actually running.
         if not self._watcher_announced:
-            logger.warning("SMB3 client active: watching RAM. Beat an airship to "
-                           "log its Map_Completions bit (discovery mode).")
+            logger.warning("SMB3 client active: watching RAM. Beat an airship "
+                           "(or Bowser) to send checks.")
             self._watcher_announced = True
 
         try:
-            completions, rescue, lives = await read(ctx.bizhawk_ctx, [
-                (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
+            world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
+                (WORLD_NUM, 1, DOMAIN),
                 (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                 (PLAYER_LIVES, 1, DOMAIN),
             ])
@@ -180,36 +177,26 @@ class SMB3Client(BizHawkClient):
         # we read. Toggle with /smb3_debug. Off by default to avoid log spam.
         self._pass += 1
         if self.debug and self._pass % 30 == 1:
-            nonzero = [(i, completions[i]) for i in range(MAP_COMPLETIONS_LEN)
-                       if completions[i]]
             logger.info(
-                "SMB3 heartbeat #%d: rescue=$%02X lives=$%02X "
-                "Map_Completions nonzero bytes=%s",
-                self._pass, rescue[0], lives[0],
-                ", ".join(f"[{i}]=$%02X" % v for i, v in nonzero) or "none")
+                "SMB3 heartbeat #%d: World_Num=$%02X (world %d) rescue=$%02X lives=$%02X",
+                self._pass, world_num[0], world_num[0] + 1, rescue[0], lives[0])
 
         try:
-            # --- discovery: log newly-set bits to map airships to (byte,bit) ---
-            if self.discovery and self.prev_completions is not None:
-                for i in range(MAP_COMPLETIONS_LEN):
-                    newly = completions[i] & ~self.prev_completions[i]
-                    if newly:
-                        for bit in range(8):
-                            if newly & (1 << bit):
-                                logger.warning(
-                                    "SMB3 discovery: Map_Completions[$%04X] bit %d set "
-                                    "(byte_offset=%d, mask=$%02X)",
-                                    MAP_COMPLETIONS + i, bit, i, 1 << bit)
-            self.prev_completions = completions
-
-            # --- send location checks for mapped airship bits ---
+            # --- airship checks via World_Num ---
+            # Beating World N's airship advances World_Num to N (0-indexed value
+            # N, i.e. "now on World N+1"). So "World k airship cleared" once
+            # World_Num >= k. Self-heals missed passes; for linear play this is
+            # exact. (Caveat: warp-whistle skips would mark skipped airships as
+            # checked without beating them — acceptable for the POC.)
+            reached = world_num[0]  # 0-indexed current world
             checked: List[int] = []
-            for loc_id, (addr, mask) in _airship_locations_with_bits().items():
-                if loc_id in ctx.locations_checked:
-                    continue
-                if completions[addr - MAP_COMPLETIONS] & mask:
+            for world, loc_id in _airship_location_ids().items():
+                if world <= MAX_AIRSHIP_WORLD and reached >= world \
+                        and loc_id not in ctx.locations_checked:
                     checked.append(loc_id)
             if checked:
+                logger.warning("SMB3: World_Num=%d -> sending airship checks for %s",
+                               reached, sorted(checked))
                 await ctx.send_msgs([{"cmd": "LocationChecks", "locations": checked}])
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
