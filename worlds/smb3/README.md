@@ -41,32 +41,28 @@ unrelated upstream worlds missing optional deps; they don't affect smb3.
 
 7 airship-boss locations (Worlds 1–7), victory = Bowser's Castle, item model A
 (filler-only). **No ROM patch / no ASM** — the BizHawk client (`Client.py`) reads
-*vanilla* SMB3 US (PRG0) RAM to detect progress and writes items into RAM. The ASM
+*vanilla* SMB3 US (PRG1) RAM to detect progress and writes items into RAM. The ASM
 base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan notes).
 
 ### Playing it
 
 1. **Generate** a seed that includes a "Super Mario Bros. 3" slot, and host it
    (local AP server is fine).
-2. **BizHawk** (≥ 2.3.1): open your **vanilla SMB3 US (PRG0)** ROM — `Super Mario
-   Bros. 3 (U) (PRG0) [!]` (file md5 `bb5c4b6d…`, headerless CRC32 `a0b0b742`).
+2. **BizHawk** (≥ 2.3.1): open your **vanilla SMB3 US (PRG1)** ROM — `Super Mario
+   Bros. 3 (U) (PRG1) [!]` (file md5 `86d1982f…`, headerless CRC32 `2e6301ed`).
    Load the generic connector `connector_bizhawk_generic.lua` (ships with
    Archipelago) via the Lua console.
 3. **Client:** launch the BizHawk client from the AP launcher and connect to the
-   server with your slot name. It identifies the ROM by PRG hash and attaches.
-4. Beating **Bowser's Castle** sends victory. Received items currently grant **+1
-   life** each (POC item handling).
+   server with your slot name. It identifies the ROM by an internal signature.
+4. Beating each **World N airship** sends that location check; beating **Bowser's
+   Castle** sends victory. Received items currently grant **+1 life** each (POC).
 
-### Airship-check discovery (one-time)
+### How airship detection works
 
-The exact `Map_Completions` bit per airship isn't a static constant — the game
-computes it from the panel's map position. `SMB3Client.discovery` is `True` by
-default: when you beat an airship boss, the client logs a line like
-
-```
-SMB3 discovery: Map_Completions[$7D0A] bit 6 set (byte_offset=10, mask=$40)
-```
-
-Record that and set `ram_addr=0x7D0A`, `ram_bit=0x40` for that world in
-`Locations.py`. Once filled in, beating that airship will fire its AP check. (World
-1 alone is enough to prove the loop; W2–7 follow the same procedure.)
+There is no persistent per-airship completion flag in SMB3, so the client detects the
+boss fight in-level. When a Koopaling (`OBJ_BOSS_KOOPALING = $0E`) appears in the active
+object list `Level_ObjectID` ($0671–$0678), the client boosts its poll rate; the moment
+`Level_GetWandState` ($07BD) reaches `≥ 1` (the boss took its final hit), it sends the
+"World N Airship" check for the current world (`World_Num + 1`). If the Koopaling leaves
+without a defeat (e.g. you died), the client just returns to the normal poll rate. Run
+`/smb3_debug on` to log these values each pass.

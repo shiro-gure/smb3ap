@@ -12,12 +12,21 @@ Build an Archipelago (AP) **APWorld** for **Super Mario Bros. 3 (NES, USA)** so 
 participate in an AP multiworld — its in-game events become *locations* that hand items to
 other players, and its progression can be gated by *items* received from the multiworld.
 
-> **ROM revision note (correction):** this doc originally assumed "USA Rev 2" and the
-> reference disassembly targets **PRG1**. The actual ROM in use is **`Super Mario Bros. 3
-> (U) (PRG0) [!]`** (CRC32 `a0b0b742`). The client (Track B) runs fine on PRG0 — it IDs
-> the ROM by an internal signature, not a revision hash. The deferred ASM track (Track A)
-> would need a PRG0-targeted disassembly (or a PRG1 ROM) to reassemble byte-for-byte; the
-> ~1634-byte mismatch seen when reassembling against a PRG0 ROM is this PRG0/PRG1 difference.
+> **ROM revision note (correction):** this doc originally said "USA Rev 2". The supported
+> ROM is **`Super Mario Bros. 3 (U) (PRG1) [!]`** (No-Intro Rev A; headerless CRC32
+> `2e6301ed`, file md5 `86d1982f…`), which is **byte-for-byte identical** to what the
+> captainsouthbird disassembly reassembles to — so the disassembly is authoritative for
+> all addresses here, and the deferred ASM track (Track A) reassembles cleanly. (An
+> earlier PRG0 ROM differed from the disasm by ~1634 bytes — that was the PRG0/PRG1
+> difference, not a toolchain bug.)
+>
+> **Airship-detection correction:** §5.1 below proposes detecting airship clears via
+> `Map_Completions` bits. That is **wrong** — SMB3 has no airship completion bit (the
+> airship's `Map_Completions` branch is dead code, `disasm/PRG/prg011.asm:2010`). Beating
+> an airship routes through the king's room and only does `INC World_Num` ($0727,
+> `disasm/PRG/prg030.asm:2742`). The client therefore detects "World N airship cleared"
+> as `World_Num >= N`. `Map_Completions` is still relevant for the future fortress/Phase-1
+> checks (§5.5), just not for airships.
 
 This is greenfield: **no SMB3 APWorld exists in Archipelago today** (the `worlds/smb3` path 404s upstream).
 
@@ -251,7 +260,7 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Player_RescuePrincess` exact address | Low | Named var; grab from equates during impl. |
 | AP RAM scratch placement | Low–Med | Pick safe SRAM bytes in Track A; document in patch README. |
 | Track A toolchain (nesasm build reproducibility) | Med | Pin `disasm/nesasm.exe`; script the assemble→diff in `patch/README.md`; verify byte-for-byte vanilla reassembly first. |
-| Vanilla ROM region/rev | Med | ROM in use is **PRG0** (`a0b0b742`); the disasm targets **PRG1**, so reassembly won't match PRG0. Client IDs the ROM by internal signature. |
+| Vanilla ROM region/rev | Low | Resolved: ROM is **PRG1** (`2e6301ed`), byte-identical to the disasm build. Client IDs the ROM by internal signature. |
 
 ---
 
@@ -282,7 +291,28 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Player_Suit` / `Player_QueueSuit` | (named vars) | Immediate power-up grant |
 | `Map_ReturnStatus` | `$06xx` | 0 = level cleared (in-level signal) |
 | `Map_DoFortressFX` | (named var) | Phase 1: fortress toppled FX |
-| `Level_GetWandState` | (named var) | In-level Koopaling-defeat state (transient) |
+| `Level_ObjectID` | `$0671`–`$0678` | Active actor IDs (8 slots); `$0E` = `OBJ_BOSS_KOOPALING` present ⇒ in airship boss fight |
+| `Level_GetWandState` | `$07BD` | In-level Koopaling-defeat state: 0 = alive, **≥1 = defeated** — **airship-clear detection** |
+| `World_Num` | `$0727` | Current world index (0 = World 1); airship just beaten = `World_Num + 1` |
 
 *Addresses without a hex value are named `.ds` variables in `disasm/smb3.asm`; resolve to absolute
 addresses during implementation by tracing the equate block.*
+
+---
+
+## 10. Future work (not built)
+
+- **Airship-clear detection (implemented, supersedes §5.1 for airships):** there is no
+  `Map_Completions` bit for airships (that branch is dead code, `disasm/PRG/prg011.asm:2010`).
+  The client detects the boss in-level: when a Koopaling (`$0E`) is present in `Level_ObjectID`
+  ($0671) it boosts the poll rate, and a defeat (`Level_GetWandState` $07BD ≥ 1) credits world
+  `World_Num + 1`. (An earlier attempt keyed off the king's-room cinematic flag `Cine_ToadKing`
+  $05FD, but at the 0.5s poll that transient flag was missed every time — hence the
+  Koopaling-object/wand-state approach with adaptive polling.) `Map_Completions` remains the
+  channel for Phase 1 fortress checks (§5.5).
+- **Multiworld letter screen (Track A / ASM, future):** overwrite the king's-room end-of-world
+  letter text to display the AP items and recipient player names this slot *released items to* —
+  turning the post-airship letter into a "you sent X to Y" multiworld summary. Text generation is
+  `EndWorldLetter_GenerateText` (`disasm/PRG/prg030.asm:2667`); the per-suit/throne-room text tables
+  live around `KingText_Frog` (`disasm/PRG/prg027.asm:468`) and `LL_ThroneRoom`
+  (`disasm/PRG/prg014.asm:4848`). Requires the base-patch ASM track; not started.
