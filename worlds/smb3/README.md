@@ -39,10 +39,11 @@ unrelated upstream worlds missing optional deps; they don't affect smb3.
 
 ## Scope (current): client-only POC
 
-7 airship-boss locations (Worlds 1–7), victory = Bowser's Castle, item model A
-(filler-only). **No ROM patch / no ASM** — the BizHawk client (`Client.py`) reads
-*vanilla* SMB3 US (PRG1) RAM to detect progress and writes items into RAM. The ASM
-base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan notes).
+7 airship-boss locations (Worlds 1–7) + 14 fortress (Boom Boom) locations, victory =
+Bowser's Castle, item model A (filler-only). **No ROM patch / no ASM** — the BizHawk
+client (`Client.py`) reads *vanilla* SMB3 US (PRG1) RAM to detect progress and writes
+items into RAM. The ASM base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan
+notes).
 
 ### Playing it
 
@@ -54,15 +55,21 @@ base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan notes).
    Archipelago) via the Lua console.
 3. **Client:** launch the BizHawk client from the AP launcher and connect to the
    server with your slot name. It identifies the ROM by an internal signature.
-4. Beating each **World N airship** sends that location check; beating **Bowser's
-   Castle** sends victory. Received items currently grant **+1 life** each (POC).
+4. Beating each **World N airship** and each **fortress** (Boom Boom) sends that location
+   check; beating **Bowser's Castle** sends victory. Received items currently grant **+1
+   life** each (POC).
 
-### How airship detection works
+### How detection works (airships + fortresses)
 
-There is no persistent per-airship completion flag in SMB3, so the client detects the
-boss fight in-level. When a Koopaling (`OBJ_BOSS_KOOPALING = $0E`) appears in the active
-object list `Level_ObjectID` ($0671–$0678), the client boosts its poll rate; the moment
-`Level_GetWandState` ($07BD) reaches `≥ 1` (the boss took its final hit), it sends the
-"World N Airship" check for the current world (`World_Num + 1`). If the Koopaling leaves
-without a defeat (e.g. you died), the client just returns to the normal poll rate. Run
-`/smb3_debug on` to log these values each pass.
+No persistent per-clear flag exists in SMB3, so the client detects each boss fight
+in-level by scanning the active-object list `Level_ObjectID` ($0671–$0678) and boosting its
+poll rate while a boss is on screen (latched per-encounter):
+
+- **Airship:** Koopaling (`$0E`) on screen → on `Level_GetWandState` ($07BD) `≥ 1` (final
+  hit), send the "World N Airship" check (`World_Num + 1`).
+- **Fortress:** Boom Boom (`$4B`/`$4C`) on screen → on a 0→nonzero edge of
+  `Map_DoFortressFX` ($0745) (set only by the post-Boom-Boom "?" ball), credit the world's
+  next uncredited fortress in clear-order.
+
+Dying/leaving without a defeat just restores the normal poll rate. Run `/smb3_debug on` to
+log these values each pass.
