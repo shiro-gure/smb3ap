@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("SMB3")
 
+# Build/revision stamp — bump on each client change so the loaded build is
+# unambiguous in the log (catches a stale apworld on the play machine).
+CLIENT_REV = "2026-06-20-koopaling-wandstate"
+
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
 # is dead code, disasm/PRG/prg011.asm:2010). We detect a boss defeat in-level:
@@ -174,10 +178,11 @@ class SMB3Client(BizHawkClient):
             return
         self._last_skip = None
 
-        # One-time proof the watcher is actually running.
+        # One-time proof the watcher is actually running. Includes the build rev
+        # so a stale apworld on the play machine is obvious in the log.
         if not self._watcher_announced:
-            logger.warning("SMB3 client active: watching RAM. Beat an airship "
-                           "(or Bowser) to send checks.")
+            logger.warning("SMB3 client active (build %s): watching RAM. Beat an "
+                           "airship (or Bowser) to send checks.", CLIENT_REV)
             self._watcher_announced = True
 
         try:
