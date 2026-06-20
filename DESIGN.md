@@ -291,9 +291,9 @@ No assembler is invoked here — only bsdiff apply + byte writes.
 | `Player_Suit` / `Player_QueueSuit` | (named vars) | Immediate power-up grant |
 | `Map_ReturnStatus` | `$06xx` | 0 = level cleared (in-level signal) |
 | `Map_DoFortressFX` | (named var) | Phase 1: fortress toppled FX |
-| `Level_GetWandState` | (named var) | In-level Koopaling-defeat state (transient) |
-| `Cine_ToadKing` | `$05FD` | King's-room cinematic flag (0/1/2) — **airship-clear detection** (post-airship only; warp-proof) |
-| `World_Num` | `$0727` | Current world index (0 = World 1); read with `Cine_ToadKing` to get which airship was beaten (= `World_Num + 1`) |
+| `Level_ObjectID` | `$0671`–`$0678` | Active actor IDs (8 slots); `$0E` = `OBJ_BOSS_KOOPALING` present ⇒ in airship boss fight |
+| `Level_GetWandState` | `$07BD` | In-level Koopaling-defeat state: 0 = alive, **≥1 = defeated** — **airship-clear detection** |
+| `World_Num` | `$0727` | Current world index (0 = World 1); airship just beaten = `World_Num + 1` |
 
 *Addresses without a hex value are named `.ds` variables in `disasm/smb3.asm`; resolve to absolute
 addresses during implementation by tracing the equate block.*
@@ -304,9 +304,12 @@ addresses during implementation by tracing the equate block.*
 
 - **Airship-clear detection (implemented, supersedes §5.1 for airships):** there is no
   `Map_Completions` bit for airships (that branch is dead code, `disasm/PRG/prg011.asm:2010`).
-  The client detects a boss defeat via the king's-room cinematic flag `Cine_ToadKing` ($05FD)
-  going non-zero (`disasm/PRG/prg005.asm:4999`), crediting world `World_Num + 1`. `Map_Completions`
-  remains the channel for Phase 1 fortress checks (§5.5).
+  The client detects the boss in-level: when a Koopaling (`$0E`) is present in `Level_ObjectID`
+  ($0671) it boosts the poll rate, and a defeat (`Level_GetWandState` $07BD ≥ 1) credits world
+  `World_Num + 1`. (An earlier attempt keyed off the king's-room cinematic flag `Cine_ToadKing`
+  $05FD, but at the 0.5s poll that transient flag was missed every time — hence the
+  Koopaling-object/wand-state approach with adaptive polling.) `Map_Completions` remains the
+  channel for Phase 1 fortress checks (§5.5).
 - **Multiworld letter screen (Track A / ASM, future):** overwrite the king's-room end-of-world
   letter text to display the AP items and recipient player names this slot *released items to* —
   turning the post-airship letter into a "you sent X to Y" multiworld summary. Text generation is

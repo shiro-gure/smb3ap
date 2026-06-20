@@ -59,9 +59,10 @@ base-patch track is deferred (see `DESIGN.md` §4/§8 and the plan notes).
 
 ### How airship detection works
 
-There is no per-airship completion flag in SMB3 — beating an airship just advances
-`World_Num` ($0727), the current-world index (`INC World_Num`,
-`disasm/PRG/prg030.asm:2742`). The client watches it and sends the "World N Airship"
-check once `World_Num >= N` (worlds 1–7). Run `/smb3_debug on` in the client to log
-`World_Num` each pass. Exact for linear play; warp-whistle skips would mark skipped
-airships as cleared (POC limitation).
+There is no persistent per-airship completion flag in SMB3, so the client detects the
+boss fight in-level. When a Koopaling (`OBJ_BOSS_KOOPALING = $0E`) appears in the active
+object list `Level_ObjectID` ($0671–$0678), the client boosts its poll rate; the moment
+`Level_GetWandState` ($07BD) reaches `≥ 1` (the boss took its final hit), it sends the
+"World N Airship" check for the current world (`World_Num + 1`). If the Koopaling leaves
+without a defeat (e.g. you died), the client just returns to the normal poll rate. Run
+`/smb3_debug on` to log these values each pass.

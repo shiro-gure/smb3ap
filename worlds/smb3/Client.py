@@ -30,22 +30,33 @@ if TYPE_CHECKING:
 logger = logging.getLogger("SMB3")
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
-# Airships have NO completion bit (the airship's Map_Completions branch is dead
-# code, disasm/PRG/prg011.asm:2010). Beating an airship boss makes the player fall
-# into the king's room, which spawns OBJ_TOADANDKING and sets Cine_ToadKing (the
-# king's-room cinematic flag: 0 idle, 1 init, 2 running). That king's room loads
-# ONLY via Player_FallToKing, set ONLY by the post-boss airship vanish
-# (disasm/PRG/prg001.asm:4294) — so Cine_ToadKing is strictly post-airship and a
-# warp whistle never triggers it. During the cinematic World_Num has not yet
-# incremented (that INC happens later, disasm/PRG/prg030.asm:2742), so the world
-# just beaten = World_Num + 1.
-#   Cine_ToadKing = $05FD (disasm/smb3.asm:1794); World_Num = $0727 (:2031).
-CINE_TOADKING = 0x05FD          # king's-room cinematic active (post-airship only)
+# Airships have NO persistent completion bit (the airship's Map_Completions branch
+# is dead code, disasm/PRG/prg011.asm:2010). We detect a boss defeat in-level:
+#
+# - Level_ObjectID ($0671-$0678, 8 slots): "all active actor IDs"
+#   (disasm/smb3.asm:1881). The Koopaling boss is OBJ_BOSS_KOOPALING = $0E
+#   (disasm/smb3.asm:3283; dispatched via this ID, disasm/PRG/prg001.asm:84). So
+#   "$0E present in these 8 bytes" == a Koopaling is on screen (we're in the fight).
+# - Level_GetWandState ($07BD): the post-defeat state machine. 0 = boss alive;
+#   1 = final hit landed / Koopaling flies off (= DEFEATED); 2-7 = wand/vanish/fall
+#   sequence (disasm/PRG/prg001.asm:3061-3073, :3708). So >= 1 == boss beaten.
+# - World_Num ($0727): current world index, 0 = World 1 (disasm/smb3.asm:2031).
+#   The airship just beaten = World_Num + 1 (World_Num increments later, in the
+#   king's room, disasm/PRG/prg030.asm:2742 — not yet during the fight).
+LEVEL_OBJECTID = 0x0671        # 8 slots; scan for the Koopaling
+LEVEL_OBJECTID_LEN = 8
+OBJ_BOSS_KOOPALING = 0x0E
+LEVEL_GETWANDSTATE = 0x07BD    # 0 = boss alive; >= 1 = boss defeated this level
 WORLD_NUM = 0x0727             # current world index (0 = World 1); for which-world
 PLAYER_RESCUE_PRINCESS = 0x078D  # non-zero after Bowser beaten -> victory
 PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 
 DOMAIN = "System Bus"
+
+# Watcher poll intervals (seconds). Normal is the BizHawk default; we tighten it
+# only while a Koopaling is on screen, so the brief defeat state is caught.
+POLL_NORMAL = 0.5
+POLL_BOOST = 0.1
 
 # Highest world that has a Koopaling airship (World 8's climax is Bowser, the goal).
 MAX_AIRSHIP_WORLD = 7
@@ -93,9 +104,8 @@ class SMB3Client(BizHawkClient):
 
     def __init__(self) -> None:
         super().__init__()
-        # Previous Cine_ToadKing value, to detect the 0->nonzero airship edge.
-        # None until baselined on the first watcher pass after connect.
-        self._prev_cine: Optional[int] = None
+        # True while a Koopaling is on screen and we've boosted the poll rate.
+        self._boss_active = False
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -130,6 +140,7 @@ class SMB3Client(BizHawkClient):
         ctx.game = self.game
         ctx.items_handling = 0b111  # full remote items
         ctx.want_slot_data = False
+        ctx.watcher_timeout = POLL_NORMAL  # boosted dynamically during boss fights
         # Register the /smb3_debug command (idempotent across re-validations).
         if "smb3_debug" not in ctx.command_processor.commands:
             ctx.command_processor.commands["smb3_debug"] = cmd_smb3_debug
@@ -141,9 +152,9 @@ class SMB3Client(BizHawkClient):
         if cmd == "Connected":
             self.synced = False
             self._watcher_announced = False
-            # Re-baseline the Cine_ToadKing edge detector against current state, so
-            # a reconnect doesn't misread a stale prev value as a fresh edge.
-            self._prev_cine = None
+            # Reset boss-fight state; poll rate restores to normal next pass.
+            self._boss_active = False
+            ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write, RequestFailedError
@@ -170,8 +181,9 @@ class SMB3Client(BizHawkClient):
             self._watcher_announced = True
 
         try:
-            cine, world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
-                (CINE_TOADKING, 1, DOMAIN),
+            object_ids, wand_state, world_num, rescue, lives = await read(ctx.bizhawk_ctx, [
+                (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
+                (LEVEL_GETWANDSTATE, 1, DOMAIN),
                 (WORLD_NUM, 1, DOMAIN),
                 (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                 (PLAYER_LIVES, 1, DOMAIN),
@@ -186,38 +198,50 @@ class SMB3Client(BizHawkClient):
             logger.exception("SMB3 watcher crashed during read")
             return
 
+        koopaling_on_screen = OBJ_BOSS_KOOPALING in object_ids
+
         # Heartbeat (debug only): every N passes, prove we're alive and show what
         # we read. Toggle with /smb3_debug. Off by default to avoid log spam.
         self._pass += 1
         if self.debug and self._pass % 30 == 1:
             logger.info(
-                "SMB3 heartbeat #%d: World_Num=$%02X (world %d) cine=$%02X "
-                "rescue=$%02X lives=$%02X",
-                self._pass, world_num[0], world_num[0] + 1, cine[0],
-                rescue[0], lives[0])
+                "SMB3 heartbeat #%d: World_Num=$%02X (world %d) koopaling=%s "
+                "wand_state=$%02X rescue=$%02X lives=$%02X",
+                self._pass, world_num[0], world_num[0] + 1, koopaling_on_screen,
+                wand_state[0], rescue[0], lives[0])
 
         try:
-            # --- airship checks via Cine_ToadKing rising edge ---
-            # Cine_ToadKing goes 0 -> nonzero only when the post-airship king's-room
-            # cinematic starts (warps never trigger it). At that moment World_Num is
-            # not yet incremented, so the world just beaten = World_Num + 1.
-            #
-            # We baseline `prev` to the current value the first pass after connect,
-            # so an airship beaten before connecting (or a mid-cinematic connect) is
-            # not retroactively credited. Future: a World 9 hub + revisiting worlds
-            # will need a persistent per-world record rather than this edge.
-            cur_cine = cine[0]
-            if self._prev_cine is None:
-                self._prev_cine = cur_cine
-            elif self._prev_cine == 0 and cur_cine != 0:
-                world = world_num[0] + 1  # 1-indexed world just beaten
-                loc_id = _airship_location_ids().get(world)
-                if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
-                        and loc_id not in ctx.checked_locations:
-                    logger.warning("SMB3: king's-room cinematic started -> beat World "
-                                   "%d airship, sending check %d", world, loc_id)
-                    await ctx.send_msgs([{"cmd": "LocationChecks", "locations": [loc_id]}])
-            self._prev_cine = cur_cine
+            # --- airship checks via the Koopaling boss fight ---
+            # Adaptive polling: when a Koopaling ($0E) appears in Level_ObjectID we
+            # boost the poll rate (the defeat state is brief). While boosted, if
+            # Level_GetWandState >= 1 the boss was defeated -> credit the airship
+            # (world = World_Num + 1; World_Num hasn't incremented yet). If the
+            # Koopaling leaves without that (e.g. the player died), just stand down.
+            # Dedup via ctx.checked_locations, so re-entering a beaten airship or a
+            # reconnect won't double-send.
+            if koopaling_on_screen and not self._boss_active:
+                self._boss_active = True
+                ctx.watcher_timeout = POLL_BOOST
+                logger.info("SMB3: Koopaling on screen — boosting poll rate.")
+
+            if self._boss_active:
+                if wand_state[0] >= 1:
+                    world = world_num[0] + 1  # 1-indexed world whose airship this is
+                    loc_id = _airship_location_ids().get(world)
+                    if world <= MAX_AIRSHIP_WORLD and loc_id is not None \
+                            and loc_id not in ctx.checked_locations:
+                        logger.warning("SMB3: World %d Koopaling defeated "
+                                       "(wand_state=$%02X), sending check %d",
+                                       world, wand_state[0], loc_id)
+                        await ctx.send_msgs(
+                            [{"cmd": "LocationChecks", "locations": [loc_id]}])
+                    self._boss_active = False
+                    ctx.watcher_timeout = POLL_NORMAL
+                elif not koopaling_on_screen:
+                    # Koopaling gone without a defeat (died / left) — stand down.
+                    self._boss_active = False
+                    ctx.watcher_timeout = POLL_NORMAL
+                    logger.info("SMB3: Koopaling gone (no defeat) — normal poll rate.")
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:

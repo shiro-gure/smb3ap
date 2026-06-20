@@ -80,13 +80,22 @@ output appears in the **Archipelago BizHawk Client window**, not BizHawk's Lua c
 
 ### How airship detection works
 
-SMB3 has **no per-airship completion flag** — beating an airship boss routes through
-the king's room and just does `INC World_Num` (`disasm/PRG/prg030.asm:2742`); the
-airship's `Map_Completions` "complete" branch is dead code (`prg011.asm:2010`). So the
-client watches **`World_Num` ($0727)**, the current world index (0 = World 1 … 7 =
-World 8), and sends the "World N Airship" check once `World_Num >= N`. This is exact
-for linear play; warp-whistle skips would mark skipped airships as cleared (acceptable
-for the POC). Use `/smb3_debug on` in the client to log `World_Num` each pass.
+SMB3 has **no persistent per-airship completion flag** (the airship's `Map_Completions`
+"complete" branch is dead code, `disasm/PRG/prg011.asm:2010`), so the client detects the
+boss fight in-level with adaptive polling:
+
+- **`Level_ObjectID` ($0671–$0678)** holds the 8 active actor IDs. When the Koopaling
+  (`OBJ_BOSS_KOOPALING = $0E`, `disasm/smb3.asm:3283`) appears there, the client boosts
+  its poll rate (the defeat state is brief).
+- **`Level_GetWandState` ($07BD)** is the post-defeat state machine: `0` = boss alive,
+  `≥ 1` = final hit landed / defeated (`disasm/PRG/prg001.asm:3061-3073`). On `≥ 1` the
+  client sends the "World N Airship" check for the current world (`World_Num + 1`, since
+  `World_Num` increments only later in the king's room), deduped via `checked_locations`.
+- If the Koopaling leaves without a defeat (player died/left), the client just restores
+  the normal poll rate. Use `/smb3_debug on` to log these values each pass.
+
+(An earlier approach watched the transient king's-room cinematic flag `Cine_ToadKing`
+$05FD, but at the 0.5s poll it was missed every time — hence this object/wand-state model.)
 
 ## Pull requests
 
