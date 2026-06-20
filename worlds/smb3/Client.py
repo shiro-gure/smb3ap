@@ -224,6 +224,13 @@ class SMB3Client(BizHawkClient):
             # Koopaling leaves without that (e.g. the player died), just stand down.
             # Dedup via ctx.checked_locations, so re-entering a beaten airship or a
             # reconnect won't double-send.
+            #
+            # TODO(before PR/merge): this re-boosts + re-logs "Koopaling on screen"
+            # every pass while the Koopaling stays on screen AFTER the check fired
+            # (it lingers for the wand/vanish sequence), spamming the log and keeping
+            # the poll boosted needlessly. Latch per-encounter: once handled, don't
+            # re-trigger until the Koopaling actually leaves. MUST suppress before
+            # opening the PR.
             if koopaling_on_screen and not self._boss_active:
                 self._boss_active = True
                 ctx.watcher_timeout = POLL_BOOST
