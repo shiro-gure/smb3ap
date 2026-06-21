@@ -1,17 +1,13 @@
-from typing import Dict
-
-from BaseClasses import Item, ItemClassification, Location, MultiWorld, Region, Tutorial
+from BaseClasses import Item, ItemClassification, Location, Region
 from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
-from .Locations import BOWSERS_CASTLE, location_table
+from .Locations import (
+    BASE_ID, BOWSERS_CASTLE, location_name_to_id, location_table,
+)
 from .Options import SMB3Options
 from .Regions import region_table
 from .Rules import set_rules
-
-# Arbitrary unused id base for SMB3. Item/location codes in Items.py / Locations.py
-# are offsets from this; the absolute ids must stay stable once shipped.
-BASE_ID = 7700000
 
 
 class SMB3Item(Item):
@@ -24,14 +20,10 @@ class SMB3Location(Location):
 
 class SMB3Web(WebWorld):
     theme = "grass"
-    tutorials = [Tutorial(
-        "Multiworld Setup Guide",
-        "A guide to setting up Super Mario Bros. 3 for Archipelago.",
-        "English",
-        "setup_en.md",
-        "setup/en",
-        ["Shiro"],
-    )]
+    # No tutorials override yet — the setup/game-info docs aren't written.
+    # (adding games.md requires a setup doc + game_info doc before upstream
+    # submission; tracked in NEXT_STEPS.md.) Leaving the default empty list here
+    # avoids a dangling reference to a non-existent setup_en.md.
 
 
 class SMB3World(World):
@@ -47,7 +39,7 @@ class SMB3World(World):
     topology_present = True
 
     item_name_to_id = {name: BASE_ID + data.code for name, data in item_table.items()}
-    location_name_to_id = {name: BASE_ID + data.code for name, data in location_table.items()}
+    location_name_to_id = location_name_to_id
 
     def create_item(self, name: str) -> SMB3Item:
         data = item_table[name]
@@ -81,7 +73,7 @@ class SMB3World(World):
 
     def create_items(self) -> None:
         # Model A: one filler item per real (id-bearing) location. The Victory
-        # event is a locked item, so it is not counted here — pool == 7 locations.
+        # event is a locked item placed separately, so it isn't counted here.
         real_location_count = len(location_table)
         self.multiworld.itempool += [
             self.create_item(self.get_filler_item_name())

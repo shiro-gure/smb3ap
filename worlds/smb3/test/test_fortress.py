@@ -6,10 +6,12 @@ BizHawk client uses to decide which check to send.
 """
 import unittest
 
-from ..Locations import FORTRESS_COUNTS
+from ..Locations import (
+    FORTRESS_COUNTS, airship_location_id, fortress_location_ids,
+)
 from ..Client import (
-    airship_location_id, fortress_location_ids, next_unchecked_fortress,
-    fortress_cleared, FORT_RUBBLE_TILES, MAP_COMPLETIONS_LEN, MAX_AIRSHIP_WORLD,
+    next_unchecked_fortress, fortress_cleared, FORT_RUBBLE_TILES,
+    MAP_COMPLETIONS_LEN, MAX_AIRSHIP_WORLD,
 )
 
 

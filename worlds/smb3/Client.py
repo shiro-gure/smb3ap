@@ -15,16 +15,13 @@ Addresses are CPU-space, read through the "System Bus" domain, which spans work 
 """
 
 import logging
-from typing import TYPE_CHECKING, AbstractSet, List, Optional
+from typing import TYPE_CHECKING, AbstractSet, Optional
 
 from NetUtils import ClientStatus
 
 from worlds._bizhawk.client import BizHawkClient
 
-from .Locations import (
-    airship_location_name, fortress_location_names, location_table,
-)
-from . import BASE_ID
+from .Locations import airship_location_id, fortress_location_ids
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext, BizHawkClientCommandProcessor
@@ -98,20 +95,8 @@ _SIG_ADDR = 0x3FFE3
 _SIG_BYTES = b"SUPER MARIO 3"
 
 
-# --- Pure helpers (no RAM/network; unit-tested in test/test_fortress.py) ---
-
-def airship_location_id(world: int) -> Optional[int]:
-    """AP location id for a world's airship, or None if that world has none."""
-    name = airship_location_name(world)
-    data = location_table.get(name)
-    return None if data is None else BASE_ID + data.code
-
-
-def fortress_location_ids(world: int) -> List[int]:
-    """Ordered AP location ids for a world's fortresses (empty if none)."""
-    return [BASE_ID + location_table[name].code
-            for name in fortress_location_names(world)]
-
+# --- Detection-policy helpers (pure; unit-tested in test/test_fortress.py).
+# Location id/name math lives in Locations.py and is imported above. ---
 
 def next_unchecked_fortress(world: int, checked: "AbstractSet[int]") -> Optional[int]:
     """The next fortress location id for `world` not already in `checked`, in
