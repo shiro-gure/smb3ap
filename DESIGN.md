@@ -37,6 +37,9 @@ This is greenfield: **no SMB3 APWorld exists in Archipelago today** (the `worlds
 | Archipelago framework | Host for the APWorld + client | https://github.com/ArchipelagoMW/Archipelago |
 | **SMB3 disassembly** (captainsouthbird) | Authoritative ROM/RAM map; base for the ASM patch | `disasm/` (cloned) — https://github.com/captainsouthbird/smb3 |
 | SMB3 web randomizer (ssjtroly) | JS *logic* reference only; **no multiworld support** | `../smb3-web-rando/` |
+| SMB3 disassembly/reference site | RAM map + disassembly notes (cross-check addresses) | https://smb3.bf0.org/ |
+| foundry-smb3 (IsaiahASmith) | SMB3 level/ROM editor ("Foundry"); data structures + ROM layout reference | https://github.com/IsaiahASmith/foundry-smb3 |
+| angry-sun (narfman0) | Another SMB3 randomizer; logic/approach reference | https://github.com/narfman0/angry-sun |
 
 The disassembly assembles with **nesasm** (`disasm/nesasm.exe`), 32 PRG banks, fully labeled and commented.
 
