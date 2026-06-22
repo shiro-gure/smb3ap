@@ -10,14 +10,14 @@ become *locations* that hand items to other players.
 
 ## What works today
 
-- Generates a solo/multiworld seed with 7 airship-boss locations (Worlds 1–7) and a
-  Bowser's Castle victory condition.
+- Generates a solo/multiworld seed with 7 airship-boss locations (Worlds 1–7), 14
+  fortress (Boom Boom) locations, and a Bowser's Castle victory condition.
 - A BizHawk client (`worlds/smb3/Client.py`) connects to a vanilla **`Super Mario
   Bros. 3 (U) (PRG1) [!]`** ROM, sends each World N airship check as you clear it, the
   victory check on beating Bowser, and grants received items as extra lives.
-- Airship clears are detected via the king's-room cinematic flag (no per-airship
-  completion flag exists in the game); see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
-  detection details.
+- Airship and fortress clears are detected in-level by watching the boss fight (no
+  persistent per-clear flag exists in the game); see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+  for the detection details.
 
 ## Layout
 

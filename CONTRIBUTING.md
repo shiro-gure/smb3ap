@@ -78,24 +78,38 @@ the generic Lua connector — there is no ROM patch yet. BizHawk needs the
 `data/lua/connector_bizhawk_generic.lua` (it depends on sibling files). Client log
 output appears in the **Archipelago BizHawk Client window**, not BizHawk's Lua console.
 
-### How airship detection works
+### How boss detection works (airships + fortresses)
 
-SMB3 has **no persistent per-airship completion flag** (the airship's `Map_Completions`
-"complete" branch is dead code, `disasm/PRG/prg011.asm:2010`), so the client detects the
-boss fight in-level with adaptive polling:
+SMB3 has **no persistent per-clear flag** for airships (the airship's `Map_Completions`
+"complete" branch is dead code, `disasm/PRG/prg011.asm:2010`), so the client detects each
+boss fight in-level with adaptive polling. **`Level_ObjectID` ($0671–$0678)** holds the 8
+active actor IDs; when a boss object appears there the client boosts its poll rate (the
+defeat windows are brief), latched per-encounter so the lingering boss object doesn't
+re-trigger.
 
-- **`Level_ObjectID` ($0671–$0678)** holds the 8 active actor IDs. When the Koopaling
-  (`OBJ_BOSS_KOOPALING = $0E`, `disasm/smb3.asm:3283`) appears there, the client boosts
-  its poll rate (the defeat state is brief).
-- **`Level_GetWandState` ($07BD)** is the post-defeat state machine: `0` = boss alive,
-  `≥ 1` = final hit landed / defeated (`disasm/PRG/prg001.asm:3061-3073`). On `≥ 1` the
-  client sends the "World N Airship" check for the current world (`World_Num + 1`, since
-  `World_Num` increments only later in the king's room), deduped via `checked_locations`.
-- If the Koopaling leaves without a defeat (player died/left), the client just restores
-  the normal poll rate. Use `/smb3_debug on` to log these values each pass.
+**Airships (Koopaling):** when `OBJ_BOSS_KOOPALING = $0E` is on screen, watch
+`Level_GetWandState` ($07BD): `0` = alive, `≥ 1` = final hit / defeated
+(`disasm/PRG/prg001.asm:3061-3073`). On `≥ 1`, send the "World N Airship" check for the
+current world (`World_Num + 1`; `World_Num` increments only later in the king's room).
 
-(An earlier approach watched the transient king's-room cinematic flag `Cine_ToadKing`
-$05FD, but at the 0.5s poll it was missed every time — hence this object/wand-state model.)
+**Fortresses:** a fortress clear flips that fortress panel's bit in `Map_Completions`
+($7D00–$7D3F) via `Map_MarkLevelComplete` (`disasm/PRG/prg011.asm:1849,4628`). The client
+diffs `$7D00–$7D3F` each pass; on a **0→1 bit flip while `World_Map_Tile` ($00E5) is a
+fortress rubble tile** (`$60`/`$E3`), it credits the current world's next fortress
+(`World_Num + 1`). The rubble-tile check is the same test the game uses to identify a
+fortress (`disasm/PRG/prg011.asm:1845,4632`); it also excludes the lock/bridge FX bits that
+also flip in `Map_Completions` (`disasm/PRG/prg010.asm:1550-1567`), since those aren't on a
+rubble tile. This signal is **sticky** (no adaptive polling) and fires for **every**
+completion path — beating Boom Boom *and* taking a secret/alternate exit (e.g. the 1-F warp
+whistle) both run `Map_MarkLevelComplete`. (An earlier attempt used `Map_DoFortressFX`
+$0745, which only the Boom Boom "?" ball sets, so it missed secret-exit clears.) Per-fortress
+identity is brittle to decode, so crediting is **count-based clear-order**: the Nth fortress
+cleared maps to that world's Nth fortress location. Counts per world: W1:1, W2:1, W3:2, W4:2,
+W5:2, W6:3, W7:2, W8:1 (= 14).
+
+All checks dedup via `checked_locations`. Use `/smb3_debug on` to log these RAM values each
+pass. (An earlier airship approach watched the transient `Cine_ToadKing` $05FD cinematic
+flag, but at the 0.5s poll it was missed every time — hence the object + adaptive-poll model.)
 
 ## Pull requests
 

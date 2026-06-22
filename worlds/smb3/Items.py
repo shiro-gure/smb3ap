@@ -3,7 +3,6 @@ from typing import Dict, List, NamedTuple, Optional
 from BaseClasses import ItemClassification
 
 filler = ItemClassification.filler
-progression = ItemClassification.progression
 
 
 class ItemData(NamedTuple):
