@@ -40,6 +40,7 @@ This is greenfield: **no SMB3 APWorld exists in Archipelago today** (the `worlds
 | SMB3 disassembly/reference site | RAM map + disassembly notes (cross-check addresses) | https://smb3.bf0.org/ |
 | foundry-smb3 (IsaiahASmith) | SMB3 level/ROM editor ("Foundry"); data structures + ROM layout reference | https://github.com/IsaiahASmith/foundry-smb3 |
 | angry-sun (narfman0) | Another SMB3 randomizer; logic/approach reference | https://github.com/narfman0/angry-sun |
+| **smb3-rs** (nautmichio; upstream Fred/fcoughlin, MaCobra52) | SMB3 (USA Rev 1 = PRG1) randomizer we **port logic from** (world/level/koopaling shuffles + BFS reachability); **MIT** — see `NOTICE` | https://github.com/hamstringquestionable/smb3-rs |
 
 The disassembly assembles with **nesasm** (`disasm/nesasm.exe`), 32 PRG banks, fully labeled and commented.
 
