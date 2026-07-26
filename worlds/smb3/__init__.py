@@ -100,10 +100,18 @@ class SMB3World(World):
         # Emit an .apsmb3 patch (base patch = on-map checkmark; per-seed tokens
         # added in later PRs). Skipped gracefully when no base ROM is configured
         # (e.g. CI, or the patchless Any%/Vanilla flow) so generation still works.
+        # We LOG the skip (instead of silently producing nothing) so a missing
+        # rom_file is never a silent mystery — the patch just wouldn't appear.
+        import logging
+        logger = logging.getLogger("Super Mario Bros. 3")
         try:
             from .Rom import get_base_rom_path
             get_base_rom_path()
-        except (FileNotFoundError, KeyError, ValueError):
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            logger.info(
+                "SMB3 (%s): no usable base ROM (%s). Skipping .apsmb3 patch — set "
+                "host.yaml 'smb3_options: rom_file:' to your PRG1 ROM to get the "
+                "patched (checkmark) ROM.", self.player_name, exc)
             return
 
         patch = SMB3ProcedurePatch(player=self.player, player_name=self.player_name)

@@ -87,6 +87,51 @@ class TestBasePatchRoundTrip(unittest.TestCase):
         self.assertEqual(diff, EXPECTED_DIFF_BYTES)
 
 
+class TestDuplicateInstallGuard(unittest.TestCase):
+    """A stray duplicate SMB3 install must not abort the world load via a
+    double `.apsmb3` registration (regression for the 'No world found to handle
+    game' failure)."""
+
+    def test_redefining_patch_class_is_idempotent(self) -> None:
+        from worlds.Files import AutoPatchRegister
+        from ..Rom import SMB3ProcedurePatch, _PATCH_ENDING, _define_patch_class
+
+        # The ending is already registered (by the normal import). Defining the
+        # class again must NOT raise; it must reuse the existing handler.
+        self.assertIn(_PATCH_ENDING, AutoPatchRegister.file_endings)
+        again = _define_patch_class()  # would raise ImproperlyConfiguredAutoPatchError pre-fix
+        self.assertIs(again, SMB3ProcedurePatch)
+        self.assertIs(again, AutoPatchRegister.file_endings[_PATCH_ENDING])
+
+
+class TestNoRomLogging(unittest.TestCase):
+    """When no base ROM is configured, generate_output must SKIP the .apsmb3 but
+    LOG why (so a missing rom_file isn't a silent mystery)."""
+
+    def test_skip_is_logged(self) -> None:
+        import tempfile
+        import worlds.smb3 as smb3
+        from worlds.smb3 import Rom
+        from test.general import setup_solo_multiworld
+
+        # Force the "no usable ROM" path deterministically.
+        original = Rom.get_base_rom_path
+        Rom.get_base_rom_path = lambda file_name="": (_ for _ in ()).throw(
+            FileNotFoundError("test: no rom configured"))
+        try:
+            mw = setup_solo_multiworld(smb3.SMB3World)
+            world = mw.worlds[1]
+            out = tempfile.mkdtemp()
+            with self.assertLogs("Super Mario Bros. 3", level="INFO") as cm:
+                world.generate_output(out)
+            self.assertTrue(any("rom_file" in line for line in cm.output),
+                            "expected a log line mentioning rom_file")
+            self.assertFalse(any(f.endswith(".apsmb3") for f in os.listdir(out)),
+                             "no patch should be emitted without a ROM")
+        finally:
+            Rom.get_base_rom_path = original
+
+
 class TestCheckmarkTiles(unittest.TestCase):
     """Decode the disasm CHR (if present) and confirm the completed-panel tiles
     are the checkmark, not the vanilla M/L glyph."""

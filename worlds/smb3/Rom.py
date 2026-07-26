@@ -11,12 +11,15 @@ AP pattern. Only patched modes (the on-map checkmark, the hub, the shuffles) nee
 this; the original patchless client behavior is unaffected.
 """
 import hashlib
+import logging
 import os
 from typing import TYPE_CHECKING, Iterable, Optional
 
 import settings
 import Utils
-from worlds.Files import APProcedurePatch, APTokenMixin, APTokenTypes
+from worlds.Files import (
+    APProcedurePatch, APTokenMixin, APTokenTypes, AutoPatchRegister,
+)
 
 if TYPE_CHECKING:
     from . import SMB3World
@@ -30,28 +33,53 @@ PRG1_CRC32 = 0x2E6301ED
 # The canonical iNES header for this ROM (16 PRG pages, 16 CHR pages, mapper 4).
 INES_HEADER = bytes.fromhex("4e45531a101040000000000000000000")
 
+_PATCH_ENDING = ".apsmb3"
 
-class SMB3ProcedurePatch(APProcedurePatch, APTokenMixin):
-    game = "Super Mario Bros. 3"
-    hash = [PRG1_MD5]
-    patch_file_ending = ".apsmb3"
-    result_file_ending = ".nes"
-    name: bytearray
 
-    procedure = [
-        ("apply_bsdiff4", ["basepatch.bsdiff4"]),
-        ("apply_tokens", ["token_patch.bin"]),
-    ]
+def _define_patch_class() -> type:
+    """Define the procedure-patch class.
 
-    @classmethod
-    def get_source_data(cls) -> bytes:
-        return get_base_rom_bytes()
+    `AutoPatchRegister` (the metaclass) registers `patch_file_ending` globally at
+    class-definition time and RAISES if the same ending is registered twice — and
+    that error would abort the entire world import. A duplicate registration happens
+    when SMB3 is present in two places at once (e.g. a stray unzipped copy alongside
+    the .apworld). To keep a duplicate install from killing the world, we only DEFINE
+    the class when `.apsmb3` isn't already registered; otherwise we reuse the existing
+    handler. (The class must be defined inside a function so the `class` statement —
+    and thus the metaclass registration — is guarded by the check.)"""
+    if _PATCH_ENDING in AutoPatchRegister.file_endings:
+        logging.getLogger("Super Mario Bros. 3").warning(
+            "SMB3 appears to be installed more than once (%s already registered). "
+            "Reusing the existing patch handler; keep only ONE smb3 world installed.",
+            _PATCH_ENDING)
+        return AutoPatchRegister.file_endings[_PATCH_ENDING]
 
-    def write_byte(self, offset: int, value: int) -> None:
-        self.write_token(APTokenTypes.WRITE, offset, value.to_bytes(1, "little"))
+    class SMB3ProcedurePatch(APProcedurePatch, APTokenMixin):
+        game = "Super Mario Bros. 3"
+        hash = [PRG1_MD5]
+        patch_file_ending = _PATCH_ENDING
+        result_file_ending = ".nes"
+        name: bytearray
 
-    def write_bytes(self, offset: int, value: Iterable[int]) -> None:
-        self.write_token(APTokenTypes.WRITE, offset, bytes(value))
+        procedure = [
+            ("apply_bsdiff4", ["basepatch.bsdiff4"]),
+            ("apply_tokens", ["token_patch.bin"]),
+        ]
+
+        @classmethod
+        def get_source_data(cls) -> bytes:
+            return get_base_rom_bytes()
+
+        def write_byte(self, offset: int, value: int) -> None:
+            self.write_token(APTokenTypes.WRITE, offset, value.to_bytes(1, "little"))
+
+        def write_bytes(self, offset: int, value: Iterable[int]) -> None:
+            self.write_token(APTokenTypes.WRITE, offset, bytes(value))
+
+    return SMB3ProcedurePatch
+
+
+SMB3ProcedurePatch = _define_patch_class()
 
 
 def patch_rom(world: "SMB3World", patch: SMB3ProcedurePatch) -> None:
