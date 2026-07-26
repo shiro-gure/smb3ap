@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from Options import Choice, PerGameCommonOptions
+from Options import Choice, OptionGroup, PerGameCommonOptions
 
 
 class Goal(Choice):
@@ -33,3 +33,15 @@ class ItemModel(Choice):
 class SMB3Options(PerGameCommonOptions):
     goal: Goal
     item_model: ItemModel
+
+
+# Organizes the webhost options page (and generated YAML templates) into sections.
+# Any option not listed here lands in an auto-generated "Game Options" group, and
+# the item/location options get their own prebuilt group — so we only name the
+# game-specific ones. See Archipelago Options.py OptionGroup / get_option_groups.
+smb3_option_groups = [
+    OptionGroup("Goal", [
+        Goal,
+        ItemModel,
+    ]),
+]

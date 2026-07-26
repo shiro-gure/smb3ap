@@ -2,14 +2,15 @@ import os
 from typing import ClassVar, Optional
 
 import settings
-from BaseClasses import Item, ItemClassification, Location, Region
+from BaseClasses import Item, ItemClassification, Location, Region, Tutorial
 from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
     BASE_ID, BOWSERS_CASTLE, location_name_to_id, location_table,
 )
-from .Options import SMB3Options
+from .Options import SMB3Options, smb3_option_groups
+from .Presets import smb3_options_presets
 from .Regions import region_table
 from .Rom import PRG1_MD5, SMB3ProcedurePatch, patch_rom
 from .Rules import set_rules
@@ -35,10 +36,20 @@ class SMB3Location(Location):
 
 class SMB3Web(WebWorld):
     theme = "grass"
-    # No tutorials override yet — the setup/game-info docs aren't written.
-    # (adding games.md requires a setup doc + game_info doc before upstream
-    # submission; tracked in NEXT_STEPS.md.) Leaving the default empty list here
-    # avoids a dangling reference to a non-existent setup_en.md.
+
+    setup_en = Tutorial(
+        "Multiworld Setup Guide",
+        "A guide to setting up the Super Mario Bros. 3 randomizer connected to an "
+        "Archipelago Multiworld.",
+        "English",
+        "setup_en.md",
+        "setup/en",
+        ["Shiro"],
+    )
+
+    tutorials = [setup_en]
+    option_groups = smb3_option_groups
+    options_presets = smb3_options_presets
 
 
 class SMB3World(World):
