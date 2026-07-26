@@ -1,11 +1,15 @@
-"""BizHawk client for Super Mario Bros. 3 (client-only POC, no ROM patch).
+"""BizHawk client for Super Mario Bros. 3.
 
-The client attaches to a *vanilla* SMB3 US (PRG1) ROM — `Super Mario Bros. 3 (U)
-(PRG1) [!]` (No-Intro Rev A) — running in BizHawk via the generic connector, reads
-RAM to detect progress, and writes received items straight into RAM. There is no
-base patch — see worlds/smb3/README.md and the project DESIGN.md for the (deferred)
-ASM track. This is the exact revision the captainsouthbird disassembly reassembles
-to, so the disassembly is authoritative for these addresses.
+The client attaches to an SMB3 US (PRG1) ROM — `Super Mario Bros. 3 (U) (PRG1) [!]`
+(No-Intro Rev A) — running in BizHawk via the generic connector, reads RAM to detect
+progress, and writes received items straight into RAM. This is the exact revision the
+captainsouthbird disassembly reassembles to, so the disassembly is authoritative for
+these addresses.
+
+The world can now emit an `.apsmb3` patch (base patch = the on-map checkmark; ROM.py
++ generate_output), which the launcher/client applies before booting BizHawk. The
+client accepts both an unpatched vanilla ROM and an .apsmb3-patched one — detection is
+identical either way (the checkmark is a CHR-only change).
 
 The ROM is identified by an internal signature (below), so the client also tolerates
 PRG0, but PRG1 is the supported/disassembly-matching revision.
@@ -147,8 +151,12 @@ def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> No
 class SMB3Client(BizHawkClient):
     game = "Super Mario Bros. 3"
     system = "NES"
-    # No patch file in the POC; we identify the ROM by signature in validate_rom.
-    patch_suffix = None
+    # .apsmb3 patches (base patch = on-map checkmark, + future hooks) are applied
+    # by the launcher/client, which then boots BizHawk with the patched ROM. We
+    # still identify the ROM by the "SUPER MARIO 3" signature in validate_rom
+    # (unchanged by the CHR-only checkmark patch), so the client accepts BOTH an
+    # unpatched vanilla ROM (Any%/Vanilla) and an .apsmb3-patched ROM.
+    patch_suffix = ".apsmb3"
 
     def __init__(self) -> None:
         super().__init__()
