@@ -4,6 +4,39 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-002 — `FORTRESS_COUNTS` (W3, W5) may not match distinct overworld fortress panels
+
+**Logged:** 2026-07-27
+**Area:** fortress locations (`worlds/smb3/Locations.py` — `FORTRESS_COUNTS`)
+**Severity:** Low — shipped fortress detection works in-game; this is a data-model question.
+**Status:** Open — surfaced by the PR 4 panel parser (`worlds/smb3/patch/gen_panels.py`);
+deliberately NOT changed in PR 4 (would churn wire-format location ids).
+
+### What
+`FORTRESS_COUNTS = {1:1,2:1,3:2,4:2,5:2,6:3,7:2,8:1}` (total 14). The disasm structure-table
+parser finds only **12 distinct fortress *overworld panels*** — Worlds 3 and 5 each expose **one**
+fortress map panel (`W3F1L` at offset $08/bit $08; `W5F1L` at $04/$08). The `W3F2L`/`W5F2L` symbols
+that made us think "2" are **alternate internal room layouts** of the same fortress (`Fortress/3-F2A.asm`
+= "Alternate level layout"), not a second map panel. Worlds 4 and 6 genuinely have distinct extra
+fortress panels (`W4F1/2L`, `W6F1/2/3L`).
+
+### Nuance / why not fixed now
+BUG-001's in-game log shows the user saw "W3 fortress 1 + fortress 2" fire. With count-based crediting,
+a **second completion of the same W3 panel** (e.g. via the alternate exit/room) credits the world's
+second fortress location — so a 2-count may actually reflect "the same panel cleared two ways" rather
+than two panels. Whether that's the intended AP model is a **design decision**, and changing counts
+changes fortress location ids (part of the wire format). Left as-is; the PR 4 panel table therefore
+**excludes fortresses entirely** and only adds levels + toad houses.
+
+### Fix directions
+- Decide the intended model: one AP check per fortress *panel* (→ counts 1,1,1,2,1,3,2,1 = 12) vs.
+  one per *completion path* (keeps 14, needs the alt-exit to be a real distinct signal). Ties into the
+  "alternate exits as independent checks / 100% mode" idea in DESIGN.md §10.
+- If counts change, treat it as a wire-format migration (ids shift) and re-verify fortress detection
+  in-game (the same panels the user already validated).
+
+---
+
 ## BUG-001 — Save-state reload / bulk Map_Completions change false-fires fortress detection
 
 **Logged:** 2026-06-20

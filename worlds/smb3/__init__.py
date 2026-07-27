@@ -7,7 +7,8 @@ from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
-    BASE_ID, BOWSERS_CASTLE, location_name_to_id, location_table,
+    BASE_ID, BOWSERS_CASTLE, level_check_location_names,
+    level_check_locations_for_world, location_name_to_id, location_table,
 )
 from .Options import SMB3Options, smb3_option_groups
 from .Presets import smb3_options_presets
@@ -82,10 +83,18 @@ class SMB3World(World):
         menu = Region("Menu", self.player, self.multiworld)
         self.multiworld.regions.append(menu)
 
+        level_checks_on = bool(self.options.level_checks)
         for name, data in region_table.items():
             region = Region(name, self.player, self.multiworld)
+            locs = list(data.locations)
+            # Optional per-level / toad-house checks only exist when the option is
+            # on. Their ids are always defined in location_name_to_id, but we only
+            # PLACE them here so the Any%/Vanilla pool is unchanged when it's off.
+            if level_checks_on and name.startswith("World "):
+                world_num = int(name.split()[1])
+                locs += level_check_locations_for_world(world_num)
             region.add_locations(
-                {loc: self.location_name_to_id.get(loc) for loc in data.locations},
+                {loc: self.location_name_to_id.get(loc) for loc in locs},
                 SMB3Location,
             )
             self.multiworld.regions.append(region)
@@ -99,12 +108,16 @@ class SMB3World(World):
         victory.place_locked_item(self.create_event("Victory"))
 
     def create_items(self) -> None:
-        # Model A: one filler item per real (id-bearing) location. The Victory
-        # event is a locked item placed separately, so it isn't counted here.
-        real_location_count = len(location_table)
+        # Model A: one filler item per real (id-bearing) location actually PLACED.
+        # location_table always defines the optional level/toad-house ids, so
+        # subtract them when the level_checks option is off (they aren't placed).
+        # The Victory event is a locked item placed separately, not counted here.
+        placed_count = len(location_table)
+        if not self.options.level_checks:
+            placed_count -= len(level_check_location_names())
         self.multiworld.itempool += [
             self.create_item(self.get_filler_item_name())
-            for _ in range(real_location_count)
+            for _ in range(placed_count)
         ]
 
     def generate_output(self, output_directory: str) -> None:

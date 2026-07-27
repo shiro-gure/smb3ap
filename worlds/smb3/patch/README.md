@@ -86,3 +86,11 @@ confirm it reads clearly against every color set.
   ASCII for inspection.
 - `make_checkmark.py` — applies the checkmark hook to `disasm/CHR/chr022.pcx` and
   `chr023.pcx`.
+- `gen_panels.py` — parses the disassembly's per-world structure tables
+  (`disasm/PRG/maps/WorldNS.asm`) and regenerates the committed `../panels.py`:
+  the completable overworld panels (levels + toad houses) keyed by
+  `(world, byte_offset, bit_mask)`, the identity the game marks on completion.
+  Run `python3 worlds/smb3/patch/gen_panels.py` to regenerate; review the diff.
+  Fortresses are intentionally excluded (they keep the Phase-0 count-based path;
+  see `known_bugs.md` BUG-002). The one flagged exclusion, `W5TDL` (World 5 Tower
+  Downward), is a special tower level, not a standard panel.

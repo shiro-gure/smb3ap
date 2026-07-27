@@ -13,5 +13,13 @@ smb3_options_presets: Dict[str, Dict[str, Any]] = {
     "Any% / Vanilla": {
         "goal": "bowser",
         "item_model": "filler_only",
+        "level_checks": False,
+    },
+    # Every level and Toad House is a check (100%-style location set). Victory is
+    # still beating Bowser — the checks are extra locations, not a harder goal.
+    "100% / Level Checks": {
+        "goal": "bowser",
+        "item_model": "filler_only",
+        "level_checks": True,
     },
 }

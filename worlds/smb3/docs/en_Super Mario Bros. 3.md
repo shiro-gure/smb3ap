@@ -27,8 +27,11 @@ own item pool is currently filler:
 
 - Defeating a Koopaling aboard a World 1–7 **airship**.
 - Clearing a **fortress** — by beating Boom Boom **or** by taking a secret/alternate exit (both count).
+- With the **Level Checks** option on: clearing **every individual level** (1-1, 1-2, …) and every
+  **Toad House** is also a check (a 100%-style location set). Off by default.
 
-Beating Bowser's Castle is the victory condition, not a check.
+Beating Bowser's Castle is the victory condition, not a check. The Level Checks option only *adds*
+locations; it does not change the win condition.
 
 ## When the player receives an item, what happens?
 

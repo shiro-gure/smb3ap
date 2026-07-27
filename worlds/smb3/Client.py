@@ -25,7 +25,9 @@ from NetUtils import ClientStatus
 
 from worlds._bizhawk.client import BizHawkClient
 
-from .Locations import airship_location_id, fortress_location_ids
+from .Locations import airship_location_id, fortress_location_ids, location_name_to_id
+from .Locations import level_location_name
+from .panels import PANELS
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext, BizHawkClientCommandProcessor
@@ -34,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-07-26-checkmark-apsmb3"
+CLIENT_REV = "2026-07-27-level-checks"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -74,6 +76,15 @@ MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario completed-panel bitfield
 MAP_COMPLETIONS_LEN = 0x40
 WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
 FORT_RUBBLE_TILES = (0x60, 0xE3)  # TILE_FORTRUBBLE / TILE_ALTRUBBLE => fortress
+
+# A completed panel's identity is (world, byte_offset, bit_mask), where byte_offset
+# is exactly the Map_Completions BYTE INDEX the game writes — Map_MarkLevelComplete
+# stores at Map_Completions[(XHi<<4)|(X>>4)] (disasm/PRG/prg011.asm:4602-4630) — so
+# the index of a flipped byte already IS the panel offset; we don't need to read the
+# player's map position. A save-state reload swaps the whole bitfield at once; if
+# more than this many bits flip 0->1 in one pass, treat it as a bulk load and
+# re-baseline instead of crediting (BUG-001 guard).
+SAVE_STATE_FLIP_THRESHOLD = 3  # >this many 0->1 flips in one pass = a bulk load
 
 DOMAIN = "System Bus"
 
@@ -130,6 +141,30 @@ def fortress_cleared(prev: "Optional[bytes]", cur: "bytes",
         if c & ~p:
             return True
     return False
+
+
+def panel_cleared(prev: "Optional[bytes]", cur: "bytes"):
+    """Return the list of (byte_offset, bit_mask) panels whose Map_Completions bit
+    just went 0->1 this pass — the identity Map_MarkLevelComplete uses. Used for
+    per-level / toad-house detection (the Level Checks option).
+
+    Returns (flips, bulk): `flips` is the list of newly-set (offset, bit); `bulk` is
+    True when an implausibly large number of bits flipped at once, i.e. a save-state
+    reload / bulk RAM swap (BUG-001 guard) — the caller should re-baseline WITHOUT
+    crediting. `prev` None (first pass) yields ([], False): a baseline, never a clear.
+    Pure — unit-tested."""
+    if prev is None:
+        return [], False
+    flips = []
+    for byte_offset, (p, c) in enumerate(zip(prev, cur)):
+        newly = c & ~p
+        if newly:
+            for bit in (0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01):
+                if newly & bit:
+                    flips.append((byte_offset, bit))
+    if len(flips) > SAVE_STATE_FLIP_THRESHOLD:
+        return [], True  # bulk load — re-baseline, don't credit
+    return flips, False
 
 
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
@@ -344,6 +379,33 @@ class SMB3Client(BizHawkClient):
                     logger.warning("SMB3: World %d fortress cleared but no unchecked "
                                    "fortress location remains (map_tile=$%02X).",
                                    world, world_map_tile[0])
+
+            # --- per-level / toad-house checks (the Level Checks option) ---
+            # Any Map_Completions bit that flipped 0->1 this pass is a cleared panel;
+            # its (world, byte_offset, bit) identifies which. We look it up in the
+            # generated PANELS table and, if it's a level/toad-house location the
+            # server knows about for this slot (i.e. the option is on), send it.
+            # Fortress panels aren't in PANELS, so they never double-fire here.
+            flips, bulk = panel_cleared(self._prev_completions, completions)
+            if bulk:
+                logger.info("SMB3: bulk Map_Completions change (save-state/sync) — "
+                            "re-baselining without crediting.")
+            else:
+                world = world_num[0] + 1
+                known = ctx.missing_locations | ctx.checked_locations | ctx.locations_checked
+                for offset, bit in flips:
+                    panel = PANELS.get((world, offset, bit))
+                    if panel is None:
+                        continue  # not a level/toad-house panel (e.g. a fortress)
+                    kind, name = panel
+                    loc_name = (level_location_name(world, name)
+                                if kind == "level" else name)
+                    loc_id = location_name_to_id.get(loc_name)
+                    if loc_id is not None and loc_id in known \
+                            and loc_id not in ctx.locations_checked:
+                        logger.info("SMB3: %s cleared (offset=$%02X bit=$%02X)",
+                                    loc_name, offset, bit)
+                        await self._send_check(ctx, loc_id)
             self._prev_completions = completions
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
