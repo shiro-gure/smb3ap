@@ -78,15 +78,13 @@ HubInit:
 \tLDA World_Num
 \tCMP #$08\t\t; World 9 (the hub)?
 \tBNE HubInit_Done\t; no -> nothing to fix
-\t; Land on the World-1 pipe of the hub (5b). Map_Init forces X=$20 (a wall tile)
-\t; and reads a garbage Y, so set both explicitly. X=$40,Y=$50 = the W1 pipe (the
-\t; in-game-verified coordinate), adjacent to $DA (right). PRG030_84A0 copies
-\t; Map_Entered_* into World_Map_*. The entry table (World9S) matches these raw
-\t; coordinates exactly.
+\t; Land on the World-2 pipe (vanilla's first drawn pipe, array row 3 col 6).
+\t; Map_Init forces X=$20 (a wall tile) and reads a garbage Y, so set both. X=$60,
+\t; Y=$40 = the drawn W2 pipe. PRG030_84A0 copies Map_Entered_* into World_Map_*.
 \tLDX Player_Current
-\tLDA #$50
-\tSTA Map_Entered_Y,X
 \tLDA #$40
+\tSTA Map_Entered_Y,X
+\tLDA #$60
 \tSTA Map_Entered_X,X
 \t; Clear the junk map objects Map_Init loaded from the OOB table pointer.
 \tLDY #(MAPOBJ_TOTAL-1)
@@ -116,57 +114,27 @@ HubReturn:
 \tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)
 """
 
-# The World-9 hub map. 16x9, row-major, $FF-terminated (same format as World1L).
-# $02 border, $8D framing fill, $DA = TILE_HORZPATHSKY (walk L/R), $DB =
-# TILE_VERTPATHSKY (walk U/D), $BC = TILE_PIPE (world-select panel; walkable via the
-# valid-list edit, entered with A). Pipe positions are the GROUND-TRUTH World_Map_X/Y
-# the player actually holds, read in-game (so the entry table below matches exactly):
-#   row4 (Y=$50): W1@col4 W2@col6 W3@col8 W4@col10   (W1 is a custom pipe; was $D9)
-#   row6 (Y=$70): W5@col6 W6@col8 W7@col10
-#   row8 (Y=$90): W8@col10
-# $DA connects same-row pipes; $DB verticals (row5 col6 & col10, row7 col10) link the
-# rows so every world is reachable from the W1 landing. Turns land on pipes (the only
-# 4-way-walkable tile after $BC is added to the valid lists).
+# The World-9 hub map = VANILLA World9L with a MINIMAL edit: three $D7 (decorative
+# cloud) tiles turned into $DB (TILE_VERTPATHSKY, walk U/D) to add vertical links
+# between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
+# $DA horizontal path stubs that already connect each pipe row) is byte-identical to
+# vanilla, so the Warp-Zone art is preserved. Pipes become walkable via the valid-
+# list edit; the vanilla W9 structure table (World9S) is left UNCHANGED — its entries
+# already route to worlds 1-8. No custom World-1 pipe yet (deferred: test the vanilla
+# pipes first). The three added $DB links: row4 col6 (W2<->W5), row4 col10 (W4<->W7),
+# row6 col10 (W7<->pipe8).
 WORLD9L = """
 \t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
 \t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $BC, $DA, $BC, $DA, $BC, $DA, $BC, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $DB, $8D, $8D, $8D, $DB, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $BC, $DA, $BC, $DA, $BC, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $DB, $8D, $8D, $8D, $8D, $02
-\t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $BC, $8D, $8D, $8D, $8D, $02
+\t.byte $02, $8D, $8D, $87, $95, $95, $95, $95, $95, $95, $95, $95, $95, $95, $88, $02
+\t.byte $02, $88, $8D, $8E, $D9, $DA, $BC, $DA, $BC, $DA, $BC, $D7, $D7, $D7, $8C, $02
+\t.byte $02, $90, $8D, $8E, $D7, $D7, $DB, $D7, $D7, $D7, $DB, $D7, $D7, $84, $90, $02
+\t.byte $02, $8D, $87, $96, $D9, $DA, $BC, $DA, $BC, $DA, $BC, $D7, $A1, $93, $8D, $02
+\t.byte $02, $8D, $8E, $D7, $D7, $D7, $D7, $D7, $D7, $D7, $DB, $D7, $D7, $8C, $8D, $02
+\t.byte $02, $8D, $8E, $D7, $D7, $84, $85, $86, $D9, $DA, $BC, $D7, $84, $90, $8D, $02
+\t.byte $02, $8D, $8F, $85, $85, $90, $8D, $8F, $85, $85, $85, $85, $90, $8D, $8D, $02
 
 \t.byte $FF
-"""
-
-# The W9 structure tables. ByRowType = (rawY & $F0) | (destWorld-1); the world-9
-# bypass (prg012.asm:575) reads the matched ByRowType's low nibble as destWorld-1.
-# ByScrCol = (XHi<<4) | (map_X>>4). Values are the in-game-verified coordinates:
-#   W1 (X=$40,Y=$50) -> $50 col $04     W5 (X=$60,Y=$70) -> $74 col $06
-#   W2 (X=$60,Y=$50) -> $51 col $06     W6 (X=$80,Y=$70) -> $75 col $08
-#   W3 (X=$80,Y=$50) -> $52 col $08     W7 (X=$A0,Y=$70) -> $76 col $0A
-#   W4 (X=$A0,Y=$50) -> $53 col $0A     W8 (X=$A0,Y=$90) -> $97 col $0A
-# Columns are unique WITHIN each row (the row search anchors on Y, then the column
-# search disambiguates), so the lookup is unambiguous.
-WORLD9S = """W9_InitIndex:\t.byte $00, (W9_ByRowType_S2 - W9_ByRowType), (W9_ByRowType_S3 - W9_ByRowType), (W9_ByRowType_S4 - W9_ByRowType)
-W9_ByRowType:\t.byte $50, $51, $52, $53, $74, $75, $76, $97
-W9_ByRowType_S2:
-W9_ByRowType_S3:
-W9_ByRowType_S4:
-W9_ByScrCol:\t.byte $04, $06, $08, $0A, $06, $08, $0A, $0A
-W9_ByScrCol_S2:
-W9_ByScrCol_S3:
-W9_ByScrCol_S4:
-W9_ObjSets:
-W9_ObjSets_S2:
-W9_ObjSets_S3:
-W9_ObjSets_S4:
-W9_LevelLayout:
-W9_LevelLayout_S2:
-W9_LevelLayout_S3:
-W9_LevelLayout_S4:
 """
 
 
@@ -225,12 +193,12 @@ def phase_5b() -> None:
             already=f"{label}\t; HUB: + TILE_PIPE",
         )
 
-    # 2) Replace the World-9 map layout with the hub grid.
+    # 2) Vanilla World9L + 3 $DB vertical links (keeps the vanilla art). Marker is a
+    #    row that only exists in the edited version (row4 with the two $DB links).
     _replace_file(os.path.join(PRG, "maps", "World9L.asm"), WORLD9L,
-                  marker="$BC, $DA, $BC, $DA, $BC, $8D, $8D, $8D, $8D, $02")
-    # 3) Replace the World-9 structure tables (pipe -> world routing).
-    _replace_file(os.path.join(PRG, "maps", "World9S.asm"), WORLD9S,
-                  marker=".byte $50, $51, $52, $53, $74, $75, $76, $97")
+                  marker="$D7, $DB, $D7, $D7, $D7, $DB, $D7")
+    # 3) World9S (the pipe->world routing table) is left UNCHANGED from vanilla — its
+    #    entries already route to worlds 1-8.
 
     # 4) Return-to-hub: INC World_Num (world-clear) -> JMP HubReturn.
     _edit(

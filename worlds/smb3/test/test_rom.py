@@ -22,11 +22,11 @@ PATCHED_CRC32 = 0xE88E6C2B
 # Exactly two contiguous CHR clusters change (tiles $88-$8B, $DC-$DF): 66 bytes.
 EXPECTED_DIFF_BYTES = 66
 
-# The hub base patch (checkmark + World-9 hub: start-in-W9 + a walkable pipe hub
-# keyed to in-game-verified coordinates + walkable-pipe valid-list edit +
-# return-to-hub). The start-world operand at file 0x30CC3 becomes 0x08 (World 9).
-# HubInit lands on the W1 pipe (X=$40, Y=$50).
-HUB_CRC32 = 0xF1184060
+# The hub base patch (checkmark + World-9 hub: start-in-W9 + vanilla World9L with 3
+# added $DB vertical path links + walkable-pipe valid-list edit + return-to-hub; the
+# vanilla W9 routing table is unchanged). The start-world operand at file 0x30CC3
+# becomes 0x08 (World 9). HubInit lands on the W2 pipe (X=$60, Y=$40).
+HUB_CRC32 = 0x8407D0D7
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into
