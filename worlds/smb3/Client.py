@@ -36,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-07-27-level-checks"
+CLIENT_REV = "2026-08-08-hub-mapcoords"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -75,6 +75,11 @@ PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario completed-panel bitfield
 MAP_COMPLETIONS_LEN = 0x40
 WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
+# Player overworld position (per-player arrays; player 0 = Mario). Logged in the
+# debug heartbeat to read exact hub coordinates while standing on a pipe.
+WORLD_MAP_X = 0x0079           # map X (col = X>>4)
+WORLD_MAP_Y = 0x0075           # map Y (row = (Y-$10)>>4)
+WORLD_MAP_XHI = 0x0077         # map screen (high X)
 FORT_RUBBLE_TILES = (0x60, 0xE3)  # TILE_FORTRUBBLE / TILE_ALTRUBBLE => fortress
 
 # A completed panel's identity is (world, byte_offset, bit_mask), where byte_offset
@@ -293,7 +298,7 @@ class SMB3Client(BizHawkClient):
 
         try:
             object_ids, wand_state, completions, world_map_tile, world_num, \
-                rescue, lives = await read(ctx.bizhawk_ctx, [
+                rescue, lives, map_x, map_y, map_xhi = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
                     (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -301,6 +306,9 @@ class SMB3Client(BizHawkClient):
                     (WORLD_NUM, 1, DOMAIN),
                     (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                     (PLAYER_LIVES, 1, DOMAIN),
+                    (WORLD_MAP_X, 1, DOMAIN),
+                    (WORLD_MAP_Y, 1, DOMAIN),
+                    (WORLD_MAP_XHI, 1, DOMAIN),
                 ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
@@ -321,9 +329,12 @@ class SMB3Client(BizHawkClient):
             completions_set = sum(bin(b).count("1") for b in completions)
             logger.info(
                 "SMB3 heartbeat #%d: World_Num=$%02X (world %d) koopaling=%s "
-                "wand_state=$%02X map_tile=$%02X completions_set=%d rescue=$%02X lives=$%02X",
+                "wand_state=$%02X map_tile=$%02X map_X=$%02X map_Y=$%02X map_XHi=$%02X "
+                "(col %d,row %d) completions_set=%d rescue=$%02X lives=$%02X",
                 self._pass, world_num[0], world_num[0] + 1, koopaling_on_screen,
-                wand_state[0], world_map_tile[0], completions_set, rescue[0], lives[0])
+                wand_state[0], world_map_tile[0], map_x[0], map_y[0], map_xhi[0],
+                map_x[0] >> 4, (map_y[0] - 0x10) >> 4 if map_y[0] >= 0x10 else 0,
+                completions_set, rescue[0], lives[0])
 
         try:
             # --- adaptive poll-rate boost while the Koopaling is on screen ---
