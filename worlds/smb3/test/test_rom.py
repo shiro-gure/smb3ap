@@ -22,6 +22,12 @@ PATCHED_CRC32 = 0xE88E6C2B
 # Exactly two contiguous CHR clusters change (tiles $88-$8B, $DC-$DF): 66 bytes.
 EXPECTED_DIFF_BYTES = 66
 
+# The hub base patch (checkmark + World-9 hub 5a). Non-shifting: the checkmark
+# CHR bytes + the start-world byte + the redirected JSR + the injected HubInit
+# routine. The start-world operand at file 0x30CC3 becomes 0x08 (World 9).
+HUB_CRC32 = 0x57B7C666
+START_WORLD_OFFSET = 0x30CC3
+
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into
 # an Archipelago clone (our test layout); the disasm/ROM live in the real repo.
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".."))
@@ -85,6 +91,45 @@ class TestBasePatchRoundTrip(unittest.TestCase):
         self.assertEqual(zlib.crc32(patched[16:]) & 0xFFFFFFFF, PATCHED_CRC32)
         diff = sum(1 for a, b in zip(headered, patched) if a != b)
         self.assertEqual(diff, EXPECTED_DIFF_BYTES)
+
+
+class TestHubPatch(unittest.TestCase):
+    """The World-9 hub base patch (basepatch_hub.bsdiff4, PR 5a)."""
+
+    def _hub_patch(self) -> bytes:
+        return pkgutil.get_data("worlds.smb3", "data/basepatch_hub.bsdiff4")
+
+    def test_hub_patch_ships_and_is_bsdiff4(self) -> None:
+        data = self._hub_patch()
+        self.assertIsNotNone(data)
+        self.assertTrue(data.startswith(b"BSDIFF40"))
+
+    def test_hub_patch_produces_hub_rom(self) -> None:
+        import bsdiff4
+        vanilla = _find_vanilla_rom()
+        if vanilla is None:
+            self.skipTest("no PRG1 ROM available")
+        headered = INES_HEADER + read_headerless_nes_rom(vanilla)
+        hub = bsdiff4.patch(headered, self._hub_patch())
+        self.assertEqual(len(hub), len(headered))
+        self.assertEqual(zlib.crc32(hub[16:]) & 0xFFFFFFFF, HUB_CRC32)
+        # The new-game start-world byte must be World 9 ($08), was World 1 ($00).
+        self.assertEqual(headered[START_WORLD_OFFSET], 0x00)
+        self.assertEqual(hub[START_WORLD_OFFSET], 0x08)
+
+    def test_hub_is_superset_of_checkmark(self) -> None:
+        # The hub ROM must still carry the checkmark edit (both patches applied).
+        import bsdiff4
+        vanilla = _find_vanilla_rom()
+        if vanilla is None:
+            self.skipTest("no PRG1 ROM available")
+        headered = INES_HEADER + read_headerless_nes_rom(vanilla)
+        checkmark = bsdiff4.patch(headered, _load_base_patch())
+        hub = bsdiff4.patch(headered, self._hub_patch())
+        # Every checkmark CHR byte that changed vs vanilla is also changed in hub.
+        for i, (v, c) in enumerate(zip(headered, checkmark)):
+            if v != c:
+                self.assertEqual(hub[i], c, f"hub lost checkmark byte at 0x{i:X}")
 
 
 class TestDuplicateInstallGuard(unittest.TestCase):

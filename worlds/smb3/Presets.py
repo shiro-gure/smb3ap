@@ -22,4 +22,11 @@ smb3_options_presets: Dict[str, Dict[str, Any]] = {
         "item_model": "filler_only",
         "level_checks": True,
     },
+    # Start in the World-9 hub, with every level a check. The 100% experience.
+    "Hub / 100%": {
+        "goal": "bowser",
+        "item_model": "filler_only",
+        "level_checks": True,
+        "hub_world": True,
+    },
 }

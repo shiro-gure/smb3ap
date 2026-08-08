@@ -83,12 +83,19 @@ SMB3ProcedurePatch = _define_patch_class()
 
 
 def patch_rom(world: "SMB3World", patch: SMB3ProcedurePatch) -> None:
-    """Assemble the patch: the base patch (checkmark + future hooks) plus any
-    per-seed byte tokens (shuffles, hub tables — added in later PRs)."""
+    """Assemble the patch: the base patch + any per-seed byte tokens.
+
+    There are two base patches, both reassembled from the disasm (see patch/):
+      - basepatch.bsdiff4      : on-map checkmark only (default).
+      - basepatch_hub.bsdiff4  : checkmark + the World-9 hub hooks.
+    The hub_world option selects which one; the procedure step always reads the
+    file named 'basepatch.bsdiff4', so we write the chosen bytes under that name.
+    """
     import pkgutil
-    patch.write_file("basepatch.bsdiff4", pkgutil.get_data(__name__, "data/basepatch.bsdiff4"))
-    # Per-seed token writes go here in later PRs (shuffle tables, hub layout).
-    # Always emit the (possibly empty) token binary so apply_tokens has its input.
+    base = "data/basepatch_hub.bsdiff4" if world.options.hub_world else "data/basepatch.bsdiff4"
+    patch.write_file("basepatch.bsdiff4", pkgutil.get_data(__name__, base))
+    # Per-seed token writes go here in later PRs (shuffles). Always emit the
+    # (possibly empty) token binary so apply_tokens has its input.
     patch.write_file("token_patch.bin", patch.get_token_binary())
 
 

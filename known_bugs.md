@@ -4,6 +4,27 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-003 — Hub World: warp clears the on-map completion bitfield (checkmarks reset)
+
+**Logged:** 2026-08-08
+**Area:** World-9 hub (`worlds/smb3/patch/make_hub.py`; disasm map-init path)
+**Severity:** Low — cosmetic in-game only; **AP checks are NOT affected** (server-side; client re-syncs).
+**Status:** Open by design — **persistence deferred** (user decision) so the hub can ship. Fix later.
+
+### What
+The World-9 warp path (and the planned return-to-hub) route through `PRG030_84A0`, whose clear loop
+(`disasm/PRG/prg030.asm:560-566`) **zeroes the entire `Map_Completions` bitfield** ($7D00-$7D7F — the
+only copy; SMB3 has no SRAM). So travelling hub→World→hub→World **resets the in-game cleared-panel
+checkmarks** each trip. Because the AP server records checks as they fire (and the client re-sends on
+reconnect), **multiworld progress is safe** — only the cosmetic on-map state resets.
+
+### Fix directions (when we do true persistence)
+- Snapshot `$7D00-$7D7F` to free RAM before the clear and restore after the reload; or
+- Branch warps to a non-clearing re-init entry (`~PRG030_84D7`, right after the clear loop) and clear
+  only on a genuine new game.
+
+---
+
 ## BUG-002 — `FORTRESS_COUNTS` (W3, W5) may not match distinct overworld fortress panels
 
 **Logged:** 2026-07-27

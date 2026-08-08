@@ -41,11 +41,25 @@ class LevelChecks(Toggle):
     display_name = "Level Checks"
 
 
+class HubWorld(Toggle):
+    """Start in World 9 (the Warp Zone) as a travel hub instead of World 1.
+
+    off (default): a new game starts in World 1 and worlds are played in order
+        (vanilla progression).
+    on: a ROM hack starts you in World 9 as a hub. (Full free travel — a panel to
+        every world, and returning to the hub after beating a world — arrives in a
+        follow-up; this first step lands you cleanly in World 9.) Requires the
+        patched ROM (the .apsmb3 already carries it).
+    """
+    display_name = "Hub World (start in World 9)"
+
+
 @dataclass
 class SMB3Options(PerGameCommonOptions):
     goal: Goal
     item_model: ItemModel
     level_checks: LevelChecks
+    hub_world: HubWorld
 
 
 # Organizes the webhost options page (and generated YAML templates) into sections.
@@ -59,5 +73,8 @@ smb3_option_groups = [
     ]),
     OptionGroup("Locations", [
         LevelChecks,
+    ]),
+    OptionGroup("World", [
+        HubWorld,
     ]),
 ]

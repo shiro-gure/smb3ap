@@ -38,6 +38,14 @@ locations; it does not change the win condition.
 Received filler items are applied to the game's RAM as you play (e.g. extra lives are added to your life count). There
 is no on-screen item message yet.
 
+## What is the Hub World option?
+
+With **Hub World** on, a ROM hack starts you in **World 9 (the Warp Zone)** as a travel hub instead of
+World 1. (This first version lands you cleanly in World 9; full free travel — a panel to every world and
+returning to the hub after beating one — arrives in a follow-up.) Off by default; requires the patched
+ROM (the `.apsmb3` carries it). Note: currently, on each warp the in-game "cleared panel" checkmarks
+reset — your Archipelago checks are unaffected (the server remembers them).
+
 ## What is the checkmark on the map?
 
 When you clear a level or fortress, its overworld panel is marked with a **checkmark** (✓) — a small cosmetic ROM patch

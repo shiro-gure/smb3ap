@@ -68,16 +68,30 @@ in chr022, `0x45DD4-0x45E0C` in chr023) — the completed-panel glyph tiles.
   (`Map_CompleteByML_Tiles`, `PRG/prg012.asm`) reference these exact indices, so
   the CHR edit alone applies everywhere with no ASM/table changes.
 
-Future PRs add ASM hooks (World-9 hub start/return, world/level/koopaling shuffle
-tables). Each new hook is applied to the disasm here, then folded into
-`basepatch.bsdiff4` by re-running the pipeline.
+- **World-9 hub, part 5a — start in World 9** (`make_hub.py`): an ASM hook that
+  starts a new game in World 9 (the Warp Zone) as a travel hub. Three non-shifting
+  edits: (1) the new-game start-world byte `LDA #$00`→`#$08` (`prg024.asm:2399`,
+  file `0x30CC3`); (2) retarget `JSR Map_Init` in `PRG030_84A0` to a new `HubInit`
+  routine; (3) append `HubInit` into bank 30's trailing free space (`$9FB6`, 74
+  blank bytes) — it runs `Map_Init` then, for World 9, fixes the two out-of-bounds
+  hazards `World_Num=8` causes (a garbage start-Y from the 8-entry `Map_Y_Starts`,
+  and junk map objects from the 8-entry `Map_List_Object_*` tables). Return-to-hub
+  + world-select panels (5b) build on the same free-space technique.
+
+**Two base patches** (both reassembled from the disasm, both diffed vs pristine
+vanilla): `basepatch.bsdiff4` = checkmark only; `basepatch_hub.bsdiff4` = checkmark
++ hub. `Rom.py` picks which to apply based on the `hub_world` option. To regenerate
+the hub patch: `python3 make_hub.py --phase 5a`, reassemble, then
+`bsdiff4.diff(vanilla, hub_rom)` → `../data/basepatch_hub.bsdiff4`.
 
 ## BizHawk manual check
 
-Load a generated `.apsmb3`-patched ROM, clear any level, and confirm the panel it
-leaves behind shows a **checkmark** (not an M/L). Check a few worlds — the mark
-inherits each world's map palette (`Map_Tile_ColorSets`, `PRG/prg012.asm`), so
-confirm it reads clearly against every color set.
+- **Checkmark:** load a generated `.apsmb3`-patched ROM, clear any level, and confirm
+  the panel it leaves behind shows a **checkmark** (not an M/L). Check a few worlds —
+  the mark inherits each world's map palette (`Map_Tile_ColorSets`, `PRG/prg012.asm`).
+- **Hub (5a):** with a `hub_world`-on seed, start a **new game** — it should drop you
+  directly onto the **World-9 (Warp Zone) map**, player standing on the path, with no
+  glitched map objects. (Free travel / return-to-hub is 5b.)
 
 ## Tooling
 
@@ -86,6 +100,8 @@ confirm it reads clearly against every color set.
   ASCII for inspection.
 - `make_checkmark.py` — applies the checkmark hook to `disasm/CHR/chr022.pcx` and
   `chr023.pcx`.
+- `make_hub.py` — applies the World-9 hub ASM hooks to the disasm PRG sources.
+  `python3 make_hub.py --phase 5a` (start-in-World-9; `5b`/`all` follow). Idempotent.
 - `gen_panels.py` — parses the disassembly's per-world structure tables
   (`disasm/PRG/maps/WorldNS.asm`) and regenerates the committed `../panels.py`:
   the completable overworld panels (levels + toad houses) keyed by
