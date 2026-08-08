@@ -121,15 +121,19 @@ HubReturn:
 # between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
 # $DA horizontal path stubs that already connect each pipe row) is byte-identical to
 # vanilla, so the Warp-Zone art is preserved. Pipes become walkable via the valid-
-# list edit; the vanilla W9 structure table (World9S) is left UNCHANGED — its entries
-# already route to worlds 1-8. No custom World-1 pipe yet (deferred: test the vanilla
-# pipes first). The three added $DB links: row4 col6 (W2<->W5), row4 col10 (W4<->W7),
-# row6 col10 (W7<->pipe8).
+# list edit. The vanilla W9 structure table (World9S) is left UNCHANGED — its entries
+# already route to worlds 1-8 (including a World-1 entry at Y=$50,col4 that vanilla
+# never gave a pipe). Edits vs vanilla:
+#   - 3 $DB vertical links: row4 col6 (W2<->W5), row4 col10 (W4<->W7), row6 col10
+#     (W7<->pipe8).
+#   - custom World-1 pipe: row3 col4 $D9 -> $BC (left of pipe 2; the $DA at col5
+#     already connects it, and the vanilla $50/$04 table entry already routes it to
+#     World 1).
 WORLD9L = """
 \t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
 \t.byte $02, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $8D, $02
 \t.byte $02, $8D, $8D, $87, $95, $95, $95, $95, $95, $95, $95, $95, $95, $95, $88, $02
-\t.byte $02, $88, $8D, $8E, $D9, $DA, $BC, $DA, $BC, $DA, $BC, $D7, $D7, $D7, $8C, $02
+\t.byte $02, $88, $8D, $8E, $BC, $DA, $BC, $DA, $BC, $DA, $BC, $D7, $D7, $D7, $8C, $02
 \t.byte $02, $90, $8D, $8E, $D7, $D7, $DB, $D7, $D7, $D7, $DB, $D7, $D7, $84, $90, $02
 \t.byte $02, $8D, $87, $96, $D9, $DA, $BC, $DA, $BC, $DA, $BC, $D7, $A1, $93, $8D, $02
 \t.byte $02, $8D, $8E, $D7, $D7, $D7, $D7, $D7, $D7, $D7, $DB, $D7, $D7, $8C, $8D, $02
