@@ -25,8 +25,8 @@ EXPECTED_DIFF_BYTES = 66
 # The hub base patch (checkmark + World-9 hub: start-in-W9 + vanilla World9L with 3
 # added $DB vertical path links + walkable-pipe valid-list edit + return-to-hub; the
 # vanilla W9 routing table is unchanged). The start-world operand at file 0x30CC3
-# becomes 0x08 (World 9). HubInit lands on the W2 pipe (X=$60, Y=$40).
-HUB_CRC32 = 0x8407D0D7
+# becomes 0x08 (World 9). HubInit lands on the W2 pipe (X=$60, Y=$50).
+HUB_CRC32 = 0xDF8B0EB9
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into

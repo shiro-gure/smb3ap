@@ -78,11 +78,13 @@ HubInit:
 \tLDA World_Num
 \tCMP #$08\t\t; World 9 (the hub)?
 \tBNE HubInit_Done\t; no -> nothing to fix
-\t; Land on the World-2 pipe (vanilla's first drawn pipe, array row 3 col 6).
-\t; Map_Init forces X=$20 (a wall tile) and reads a garbage Y, so set both. X=$60,
-\t; Y=$40 = the drawn W2 pipe. PRG030_84A0 copies Map_Entered_* into World_Map_*.
+\t; Land ON the World-2 pipe. In-game the player holds X=$60, Y=$50 while standing
+\t; on that pipe (verified from the heartbeat) — the pipe graphic is drawn a row
+\t; higher, but the enterable/standing cell is Y=$50. Map_Init forces X=$20 (a wall)
+\t; and reads a garbage Y, so set both. PRG030_84A0 copies Map_Entered_* into
+\t; World_Map_*.
 \tLDX Player_Current
-\tLDA #$40
+\tLDA #$50
 \tSTA Map_Entered_Y,X
 \tLDA #$60
 \tSTA Map_Entered_X,X
