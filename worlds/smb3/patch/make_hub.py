@@ -64,10 +64,17 @@ HubInit:
 \tLDA World_Num
 \tCMP #$08\t\t; World 9 (the hub)?
 \tBNE HubInit_Done\t; no -> nothing to fix
-\t; Fix the garbage start-Y that Map_Init read past the 8-entry Map_Y_Starts.
+\t; Land on a WALKABLE World-9 node. Map_Init forces X=$20 (a framing/wall tile
+\t; with no adjacent path -> player stuck), and read a garbage Y past the 8-entry
+\t; Map_Y_Starts. Overwrite both: X=$60,Y=$40 is a $BC pipe node flanked by $DA
+\t; path on both sides, so left/right movement works immediately. Movement tiles
+\t; are $DA/$DB (NOT $D7, which is cosmetic). PRG030_84A0 copies Map_Entered_*
+\t; into World_Map_*.
 \tLDX Player_Current
-\tLDA #$70\t\t; valid World-9 path row (cf. Map_WW_IslandY)
-\tSTA Map_Entered_Y,X\t; PRG030_84A0 copies this into World_Map_Y
+\tLDA #$40
+\tSTA Map_Entered_Y,X
+\tLDA #$60
+\tSTA Map_Entered_X,X
 \t; Clear the junk map objects Map_Init loaded from the OOB table pointer.
 \tLDY #(MAPOBJ_TOTAL-1)
 HubInit_ClrObj:

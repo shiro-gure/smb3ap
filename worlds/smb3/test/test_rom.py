@@ -22,10 +22,11 @@ PATCHED_CRC32 = 0xE88E6C2B
 # Exactly two contiguous CHR clusters change (tiles $88-$8B, $DC-$DF): 66 bytes.
 EXPECTED_DIFF_BYTES = 66
 
-# The hub base patch (checkmark + World-9 hub 5a). Non-shifting: the checkmark
-# CHR bytes + the start-world byte + the redirected JSR + the injected HubInit
-# routine. The start-world operand at file 0x30CC3 becomes 0x08 (World 9).
-HUB_CRC32 = 0x57B7C666
+# The hub base patch (checkmark + World-9 hub). Non-shifting: the checkmark CHR
+# bytes + the start-world byte + the redirected JSR + the injected HubInit routine.
+# The start-world operand at file 0x30CC3 becomes 0x08 (World 9). HubInit lands the
+# player on a walkable node (X=$60, Y=$40).
+HUB_CRC32 = 0x5CB6D0EF
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into
