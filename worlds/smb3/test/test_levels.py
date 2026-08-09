@@ -103,6 +103,54 @@ class TestPanelCleared(unittest.TestCase):
         self.assertFalse(bulk)
 
 
+class TestDesiredCompletionBytes(unittest.TestCase):
+    """The pure client helper that re-asserts a world's cleared-level checkmark bits
+    from the AP checked set (client-driven persistence across hub travel)."""
+
+    def setUp(self) -> None:
+        from ..Client import _LEVEL_PANEL_BITS
+        self.bits = _LEVEL_PANEL_BITS
+        # World 1 has level panels; grab one (offset, bit, loc_id) to drive the tests.
+        self.assertIn(1, self.bits, "World 1 should have level panels")
+        self.off, self.bit, self.lid = self.bits[1][0]
+
+    def test_none_when_nothing_checked(self) -> None:
+        from ..Client import desired_completion_bytes
+        cur = bytes(0x40)
+        self.assertIsNone(desired_completion_bytes(1, set(), cur))
+
+    def test_sets_bit_for_checked_level(self) -> None:
+        from ..Client import desired_completion_bytes
+        cur = bytes(0x40)
+        out = desired_completion_bytes(1, {self.lid}, cur)
+        self.assertIsNotNone(out)
+        self.assertTrue(out[self.off] & self.bit,
+                        "checked level's bit must be set in the output image")
+
+    def test_none_when_already_set(self) -> None:
+        from ..Client import desired_completion_bytes
+        cur = bytearray(0x40)
+        cur[self.off] |= self.bit  # already showing the checkmark
+        self.assertIsNone(desired_completion_bytes(1, {self.lid}, bytes(cur)),
+                          "no write when the bit is already present")
+
+    def test_only_adds_never_clears(self) -> None:
+        from ..Client import desired_completion_bytes
+        # An unrelated bit is set in cur; the helper must preserve it.
+        cur = bytearray(0x40)
+        other_off = (self.off + 1) % 0x40
+        cur[other_off] = 0x01
+        out = desired_completion_bytes(1, {self.lid}, bytes(cur))
+        self.assertIsNotNone(out)
+        self.assertTrue(out[other_off] & 0x01, "must not clear pre-existing bits")
+        self.assertTrue(out[self.off] & self.bit)
+
+    def test_unknown_world_is_none(self) -> None:
+        from ..Client import desired_completion_bytes
+        # World 9 (hub) has no level panels.
+        self.assertIsNone(desired_completion_bytes(9, {self.lid}, bytes(0x40)))
+
+
 class TestLocationsIds(unittest.TestCase):
     def test_all_ids_unique(self) -> None:
         codes = [d.code for d in location_table.values() if d.code is not None]

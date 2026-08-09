@@ -26,11 +26,12 @@ EXPECTED_DIFF_BYTES = 66
 # added $DB vertical path links + walkable-pipe valid-list edit + return-to-hub; the
 # vanilla W9 routing table is unchanged). The start-world operand at file 0x30CC3
 # becomes 0x08 (World 9). HubInit lands on the W2 pipe (X=$60, Y=$50).
-# PR 5c adds completion persistence across travel (Hub_Persist clear-loop gate) and
-# keeps cleared levels re-enterable while showing the checkmark (metatile $16 +
-# LevelCompGate repaint split), plus a MoveGate so the player can walk THROUGH a
-# cleared level ($16) instead of being stopped on it.
-HUB_CRC32 = 0x2E163C49
+# PR 5c keeps cleared LEVELS re-enterable + walk-through while showing the checkmark:
+# metatile $16 (CHR -> $88-$8B) + LevelCompGate repaint split (prg012) + MoveGate
+# walk-through (prg010). Completion PERSISTENCE across travel is client-driven (the
+# native bitfield is world-agnostic with no free RAM to segment it), so there is NO
+# ROM clear-loop gate — the vanilla wipe-on-load is intact.
+HUB_CRC32 = 0xB05334B0
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into

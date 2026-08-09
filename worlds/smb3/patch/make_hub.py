@@ -105,54 +105,21 @@ HubInit_Done:
 # fall into the same map-init the original code jumped to. Routing every completed
 # world back to the hub.
 #
-# PR 5c persistence: before re-init, set Hub_Persist=1 so the map-init clear loop is
-# skipped and the on-map checkmarks survive the return to the hub (see HUB_CLEAR_GATE
-# and phase_5c). LevLoad_Unused1 ($0701) is a confirmed-free RAM byte.
+# NOTE: in-game completion persistence is NOT done in ROM (there is no persistent free
+# RAM for a world-segmented store, and the native Map_Completions bitfield is a single
+# world-agnostic 128-byte buffer — persisting it across travel bleeds one world's
+# checkmarks onto another world's panels). Instead the AP CLIENT re-writes the current
+# world's checkmark bits on each map load (Client.py). So the vanilla wipe-on-load is
+# left intact here.
 HUB_RETURN_HOOK = """
 ; ============================================================================
 ; HUB: return-to-hub hook (PR 5b). Replaces `INC World_Num` in the world-clear
 ; path; routes every completed world back to World 9. See make_hub.py.
 ; ============================================================================
 HubReturn:
-\tLDA #$01\t\t; HUB 5c: preserve completions across the return (skip the clear loop)
-\tSTA LevLoad_Unused1\t; Hub_Persist = 1
 \tLDA #$08\t\t; World 9 (the hub)
 \tSTA World_Num
 \tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)
-"""
-
-# PR 5c — completion persistence across hub travel. The map-init clear loop
-# (prg030.asm:561-566) wipes the entire Map_Completions bitfield ($7D00-$7D7F) on
-# EVERY world load, which erased the on-map checkmarks whenever the player traveled.
-# We gate that loop behind a flag (Hub_Persist = LevLoad_Unused1, $0701): the flag is
-# set on travel departures (the W9 pipe-entry warp and the world-completion HubReturn),
-# so completions survive travel; a genuine new game leaves it 0, so a new game still
-# wipes the board.
-#
-# The gate is reached by hijacking `STA PPU_CTL2` (prg030.asm:555, `8D 01 20`, a 3-byte
-# absolute store) with `JMP HubClearGate` (also 3 bytes -> non-shifting). The jump
-# lands BEFORE the original `INC UpdSel_Disable` (prg030.asm:558) and the clear loop
-# (561-566), so the gate must reproduce both side effects (the PPU_CTL2 store and the
-# UpdSel_Disable increment) before the conditional clear, then rejoin at PRG030_84D7
-# (568). Nothing external branches into the 555-566 span (verified), so absorbing it is
-# safe.
-HUB_CLEAR_GATE = """
-; ============================================================================
-; HUB: completion-persistence clear gate (PR 5c). Reached from the hijacked
-; `STA PPU_CTL2` in PRG030_84A0. Reproduces that store + INC UpdSel_Disable, then
-; skips the Map_Completions clear loop when Hub_Persist is set (travel), else clears
-; as normal (new game). Rejoins the original code at PRG030_84D7. See make_hub.py.
-; ============================================================================
-HubClearGate:
-\tSTA PPU_CTL2\t\t; (reproduce hijacked instruction: hide sprites/BG; A is still #$00)
-\tINC UpdSel_Disable\t; (reproduce prg030.asm:558, skipped by the hijack jump)
-\tLDA LevLoad_Unused1\t; Hub_Persist
-\tBEQ HubClearGate_Wipe\t; 0 (new game) -> fall through to the ORIGINAL clear loop
-\tLDA #$00\t\t; travel -> keep completions; consume the flag so the next NEW game wipes
-\tSTA LevLoad_Unused1
-\tJMP PRG030_84D7\t\t; skip the clear loop
-HubClearGate_Wipe:
-\tJMP HubClearLoop\t\t; run the original in-place clear loop (labeled below)
 """
 
 # PR 5c Part 2 — keep completed LEVEL panels re-enterable while still showing the ✓.
@@ -336,66 +303,20 @@ def phase_5b() -> None:
 
 
 def phase_5c() -> None:
-    """Completion persistence across hub travel: keep the on-map checkmarks when the
-    player travels between worlds (they were wiped by the map-init clear loop). Gate
-    that loop behind Hub_Persist (LevLoad_Unused1 / $0701), set on travel departures.
+    """Cleared levels stay re-enterable + walk-through while showing the checkmark.
+
+    (Completion persistence across travel is handled by the AP CLIENT re-writing the
+    current world's checkmark bits on each map load — NOT in ROM. The native
+    Map_Completions bitfield is a single world-agnostic 128-byte buffer with no free
+    persistent RAM to segment it per world, so the vanilla wipe-on-load is left intact.)
+
     Requires phase_5a + phase_5b (HubInit/HubReturn already injected)."""
-    print("phase 5c — completion persistence across travel:")
-    prg030 = os.path.join(PRG, "prg030.asm")
-
-    # 1) Set Hub_Persist=1 on the W9 pipe-entry warp (travel OUT to a world), so
-    #    completions survive into the destination world too. Hijack the trailing
-    #    `JMP PRG030_84A0` of the warp-consume (prg030.asm:1335) to first set the flag.
-    #    (HubReturn already sets the flag for the completion path — see HUB_RETURN_HOOK.)
-    _edit(
-        prg030,
-        "\tLDA Map_Warp_PrevWorld\n\tSTA World_Num\t \t; World_Num = Map_Warp_PrevWorld\n"
-        "\tJMP PRG030_84A0\t \t; Jump to PRG030_84A0 (initialize the world map!)",
-        "\tLDA Map_Warp_PrevWorld\n\tSTA World_Num\t \t; World_Num = Map_Warp_PrevWorld\n"
-        "\tLDA #$01\t\t; HUB 5c: preserve completions across the warp\n"
-        "\tSTA LevLoad_Unused1\t; Hub_Persist = 1\n"
-        "\tJMP PRG030_84A0\t \t; Jump to PRG030_84A0 (initialize the world map!)",
-        already="HUB 5c: preserve completions across the warp",
-    )
-
-    # 2) Hijack `STA PPU_CTL2` (prg030.asm:555) -> `JMP HubClearGate` (both 3 bytes,
-    #    non-shifting). The gate reproduces the store + INC UpdSel_Disable and gates
-    #    the clear loop on Hub_Persist. The `STA PPU_CTL2 ; Most importantly...` block
-    #    appears 3x in this bank, so anchor the full span through the (unique)
-    #    Map_Completions clear loop, changing only the one store line.
-    _edit(
-        prg030,
-        "\tSTA PPU_CTL2\t ; Most importantly, hide sprites/bg\n"
-        "\n"
-        "\t; Stop Update_Select activity temporarily while we initialize\n"
-        "\tINC UpdSel_Disable\n"
-        "\n"
-        "\t; The following clears Map_Completions (stores completed levels on the map)\n"
-        "\tLDY #$7f\t ; Y = $7F",
-        "\tJMP HubClearGate\t ; HUB 5c: gate the Map_Completions clear (was: STA PPU_CTL2)\n"
-        "\n"
-        "\t; Stop Update_Select activity temporarily while we initialize\n"
-        "\tINC UpdSel_Disable\n"
-        "\n"
-        "\t; The following clears Map_Completions (stores completed levels on the map)\n"
-        "HubClearLoop:\t\t\t; HUB 5c: label so HubClearGate can run this loop for a new game\n"
-        "\tLDY #$7f\t ; Y = $7F",
-        already="JMP HubClearGate",
-    )
-
-    # 3) Append the clear-gate routine into bank 30's free space (after HubReturn).
-    _edit(
-        prg030,
-        "\tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)\n",
-        "\tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)\n"
-        + HUB_CLEAR_GATE,
-        already="HubClearGate:",
-    )
+    print("phase 5c — re-enterable + walk-through cleared-level checkmarks:")
 
     # --- Part 2: cleared levels stay re-enterable while showing the checkmark ---------
     prg012 = os.path.join(PRG, "prg012.asm")
 
-    # 4) Point the (unused, enterable) metatile $16 at the checkmark CHR ($88-$8B), so a
+    # 1) Point the (unused, enterable) metatile $16 at the checkmark CHR ($88-$8B), so a
     #    cleared level can be drawn as a checkmark yet remain enterable. Metatile $16 is
     #    index 6 of the $10-$1F row in each of the 4 CHR planes (UL/LL/UR/LR). Each plane
     #    row has a distinct prefix, so the anchors are unique.
@@ -412,7 +333,7 @@ def phase_5c() -> None:
             already=f"{plane_prefix}, {chr_byte}, $FF",
         )
 
-    # 5) Redirect the numbered-level completion repaint to LevelCompGate. Replace the
+    # 2) Redirect the numbered-level completion repaint to LevelCompGate. Replace the
     #    `CMP Tile_Attributes_TS0,X / BGE PRG012_A570` (5 bytes) with `JMP LevelCompGate`
     #    + 2 NOP (5 bytes, non-shifting). The gate re-does the compare, preserves the
     #    fort/removable fall-through, sends quadrant>0 (pool/star) to vanilla, and writes
@@ -426,7 +347,7 @@ def phase_5c() -> None:
         already="JMP LevelCompGate",
     )
 
-    # 6) Append LevelCompGate into bank 12's blank tail (576 bytes free; in-bank so the
+    # 3) Append LevelCompGate into bank 12's blank tail (576 bytes free; in-bank so the
     #    JMP/branch reach is fine). Appending at the "Rest of ROM bank was empty" note lands
     #    it in the blank region (non-shifting — nothing follows it in the bank).
     _edit(
@@ -439,7 +360,7 @@ def phase_5c() -> None:
     # --- Part 2b: walk THROUGH a cleared level (don't stop movement on it) ------------
     prg010 = os.path.join(PRG, "prg010.asm")
 
-    # 7) Hijack `LDA World_Map_Tile / CMP Tile_AttrTable+4,Y` (5 bytes) at the move gate
+    # 4) Hijack `LDA World_Map_Tile / CMP Tile_AttrTable+4,Y` (5 bytes) at the move gate
     #    -> `JMP MoveGate` + 2 NOP (5 bytes, non-shifting), and LABEL the block-path rejoin
     #    (`LDA Pad_Holding`, the fall-through when a tile is a real enterable panel) as
     #    PRG010_MoveBlock so MoveGate can return to it. The BLT that followed the original
@@ -458,7 +379,7 @@ def phase_5c() -> None:
         already="JMP MoveGate",
     )
 
-    # 8) Append MoveGate into bank 10's blank tail (576 bytes free; same bank as the jump
+    # 5) Append MoveGate into bank 10's blank tail (576 bytes free; same bank as the jump
     #    targets PRG010_CE64 / PRG010_MoveBlock).
     _edit(
         prg010,

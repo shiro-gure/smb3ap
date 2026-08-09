@@ -36,9 +36,16 @@ coupling as levels — see PR 5c).
 **Logged:** 2026-08-08
 **Area:** World-9 hub (`worlds/smb3/patch/make_hub.py`; disasm map-init path)
 **Severity:** Low — cosmetic in-game only; **AP checks are NOT affected** (server-side; client re-syncs).
-**Status:** FIXED in PR 5c (`make_hub.py` `phase_5c`) — completions now persist across hub travel via
-the `Hub_Persist` clear-loop gate; cleared *levels* also become re-enterable with a checkmark (the
-level-repaint decoupling). Original deferred note kept below for history.
+**Status:** FIXED in PR 5c — but **client-driven**, not a ROM gate. First attempt gated the ROM clear
+loop (`Hub_Persist`); that BLED one world's checkmarks onto another world's panels, because
+`Map_Completions` ($7D00-$7D7F) is a single **world-agnostic** 128-byte bitfield and there is **no free
+persistent ROM RAM** to segment it per world (the only large WRAM block is the level-decompression
+buffer `Tile_Mem`). So the ROM gate was reverted; the vanilla wipe-on-load is intact. Instead the AP
+**client** is the persistent per-world store: on each world's map it re-asserts THAT world's cleared-level
+checkmark bits from the AP checked set (`Client.py` `desired_completion_bytes` + a guarded write). The
+ROM keeps the PR 5c level-repaint so a re-asserted bit paints the enterable `$16` checkmark tile
+(re-enterable + walk-through). Visual note: repaint runs on the next map reload (enter a level and
+return), so right after travel the board refreshes on the first level dip. Original deferred note below.
 
 ### What
 The World-9 warp path (and the planned return-to-hub) route through `PRG030_84A0`, whose clear loop

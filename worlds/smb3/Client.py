@@ -36,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-08-hub-persist"
+CLIENT_REV = "2026-08-08-hub-persist-client"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -170,6 +170,49 @@ def panel_cleared(prev: "Optional[bytes]", cur: "bytes"):
     if len(flips) > SAVE_STATE_FLIP_THRESHOLD:
         return [], True  # bulk load — re-baseline, don't credit
     return flips, False
+
+
+# --- Client-driven checkmark persistence across hub travel --------------------
+# SMB3's Map_Completions ($7D00-$7D3F) is a single, world-AGNOSTIC 128-byte bitfield
+# (indexed only by on-screen panel position), and the game wipes it on every world
+# load. There is no free persistent ROM RAM to make it per-world, so persisting the
+# raw bitfield across travel would bleed one world's checkmarks onto another world's
+# panels. Instead the CLIENT is the persistent per-world store: it knows which level
+# locations are checked, so on each world's map it writes exactly THAT world's
+# checkmark bits into Map_Completions. The ROM's own repaint (Map_Reload_with_
+# Completions, run on the next map reload — e.g. entering a level and returning)
+# then draws them; with the PR 5c ROM patch a level bit paints the enterable "$16"
+# checkmark tile, so re-entry/walk-through still work.
+#
+# Reverse index: world -> [(byte_offset, bit_mask, location_id)] for LEVEL panels
+# only (toad houses/fortresses have their own semantics and aren't force-drawn here).
+_LEVEL_PANEL_BITS: "dict[int, list[tuple[int, int, int]]]" = {}
+for (_w, _off, _bit), (_kind, _pname) in PANELS.items():
+    if _kind != "level":
+        continue
+    _lid = location_name_to_id.get(level_location_name(_w, _pname))
+    if _lid is not None:
+        _LEVEL_PANEL_BITS.setdefault(_w, []).append((_off, _bit, _lid))
+
+
+def desired_completion_bytes(world: int, checked: "AbstractSet[int]",
+                             cur: "bytes") -> "Optional[bytearray]":
+    """Return a new 64-byte Map_Completions image for `world` with the checkmark bit
+    SET for every checked level panel in that world, starting from `cur` (so we only
+    ADD bits, never clear the game's own live state). Returns None if nothing needs to
+    change (no missing bits) — the caller then skips the write.
+
+    Only sets bits; a bit already set in `cur` is left alone. Pure — unit-tested."""
+    panels = _LEVEL_PANEL_BITS.get(world)
+    if not panels:
+        return None
+    out = bytearray(cur)
+    changed = False
+    for offset, bit, loc_id in panels:
+        if loc_id in checked and offset < len(out) and not (out[offset] & bit):
+            out[offset] |= bit
+            changed = True
+    return out if changed else None
 
 
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
@@ -418,6 +461,34 @@ class SMB3Client(BizHawkClient):
                                     loc_name, offset, bit)
                         await self._send_check(ctx, loc_id)
             self._prev_completions = completions
+
+            # --- persist this world's checkmarks (client-driven) ---
+            # Travel wipes Map_Completions (the game clears it on every world load) and
+            # the bitfield is world-agnostic, so we re-assert THIS world's cleared-level
+            # bits from the AP checked set. We only ADD bits (never clear), guard the
+            # write on the value we just read (so a concurrent game write aborts it
+            # harmlessly), and re-baseline _prev_completions to the written image so the
+            # bits we set aren't mis-detected as a fresh 0->1 clear next pass. Painting
+            # happens on the next map reload (enter a level and return); AP progress is
+            # correct regardless. Bulk passes are skipped (we don't fight a save-state
+            # swap). No-op when the world has no checked level panels.
+            if not bulk:
+                world = world_num[0] + 1
+                checked = ctx.checked_locations | ctx.locations_checked
+                desired = desired_completion_bytes(world, checked, completions)
+                if desired is not None:
+                    ok = await guarded_write(
+                        ctx.bizhawk_ctx,
+                        [(MAP_COMPLETIONS, list(desired), DOMAIN)],
+                        [(MAP_COMPLETIONS, list(completions), DOMAIN)],  # guard: unchanged
+                    )
+                    if ok:
+                        self._prev_completions = bytes(desired)
+                        if self.debug:
+                            added = sum(bin(d & ~c).count("1")
+                                        for d, c in zip(desired, completions))
+                            logger.info("SMB3: re-asserted %d checkmark bit(s) for "
+                                        "World %d", added, world)
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
