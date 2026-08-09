@@ -198,6 +198,37 @@ LevelCompGate_NotLevel:
 \tJMP PRG012_A54A\t\t; fall-through target of the original BGE (fort / removable tiles)
 """
 
+# PR 5c Part 2b — let the player WALK THROUGH a cleared level (tile $16) instead of being
+# stopped on it. Separate from re-entry: the "you must complete that level!" movement gate
+# (prg010.asm:2621-2665) blocks passage over any tile whose value is >= Tile_AttrTable+4
+# (the enterable threshold) unless you reverse or wear a Judgem's cloud. Vanilla completion
+# tiles ($00/$40/..) are BELOW threshold, so movement flows over them; our enterable $16 is
+# ABOVE threshold (that's what makes it re-enterable), so it wrongly triggers the block.
+#
+# Fix: special-case $16 as "already completed -> free movement" at the top of that gate.
+# Hijack `LDA World_Map_Tile / CMP Tile_AttrTable+4,Y` (A5 E5 D9 98 7E, 5 bytes) with
+# `JMP MoveGate` (3) + 2 NOP; MoveGate lets $16 (and below-threshold tiles) pass to
+# PRG010_CE64 (free move) and rejoins the block path (PRG010_MoveBlock, labeled at the
+# original `LDA Pad_Holding`) for real uncleared panels. Non-shifting; MoveGate lives in
+# bank-10's blank tail (same bank as the jump targets).
+MOVE_GATE_HOOK = """
+; ============================================================================
+; HUB 5c: walk-through gate for cleared levels (tile $16). Reached from the
+; hijacked `LDA World_Map_Tile / CMP Tile_AttrTable+4,Y` in the map-move code.
+; $16 (cleared level) and below-threshold tiles -> free movement; real enterable
+; uncleared panels -> the original "must complete" block. See make_hub.py.
+; ============================================================================
+MoveGate:
+\tLDA <World_Map_Tile
+\tCMP #$16\t\t; cleared-level checkmark tile?
+\tBEQ MoveGate_Free\t; yes -> walk through (treat as completed)
+\tCMP Tile_AttrTable+4,Y\t; (reproduce the hijacked compare)
+\tBCC MoveGate_Free\t; < threshold -> free movement (vanilla behavior)
+\tJMP PRG010_MoveBlock\t; >= threshold -> real enterable panel -> block gate (far JMP)
+MoveGate_Free:
+\tJMP PRG010_CE64\t\t; below threshold or cleared -> free movement
+"""
+
 # The World-9 hub map = VANILLA World9L with a MINIMAL edit: three $D7 (decorative
 # cloud) tiles turned into $DB (TILE_VERTPATHSKY, walk U/D) to add vertical links
 # between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
@@ -403,6 +434,37 @@ def phase_5c() -> None:
         "; Rest of ROM bank was empty\n",
         "; Rest of ROM bank was empty\n" + LEVEL_COMP_HOOK,
         already="LevelCompGate:",
+    )
+
+    # --- Part 2b: walk THROUGH a cleared level (don't stop movement on it) ------------
+    prg010 = os.path.join(PRG, "prg010.asm")
+
+    # 7) Hijack `LDA World_Map_Tile / CMP Tile_AttrTable+4,Y` (5 bytes) at the move gate
+    #    -> `JMP MoveGate` + 2 NOP (5 bytes, non-shifting), and LABEL the block-path rejoin
+    #    (`LDA Pad_Holding`, the fall-through when a tile is a real enterable panel) as
+    #    PRG010_MoveBlock so MoveGate can return to it. The BLT that followed the original
+    #    CMP is now handled inside MoveGate (BCS -> block, else free), so drop it here.
+    _edit(
+        prg010,
+        "\tLDA <World_Map_Tile\n\tCMP Tile_AttrTable+4,Y\n"
+        "\tBLT PRG010_CE64\t \t; If tile is not in \"enterable\" range, jump to PRG010_CE64\n"
+        "\n"
+        "\tLDA <Pad_Holding",
+        "\tJMP MoveGate\t ; HUB 5c: walk-through gate for cleared levels (was: LDA/CMP)\n"
+        "\tNOP\n\tNOP\t\t; (pad to preserve length; the original BLT is handled in MoveGate)\n"
+        "\n"
+        "PRG010_MoveBlock:\t\t; HUB 5c: MoveGate rejoins here for real uncleared panels\n"
+        "\tLDA <Pad_Holding",
+        already="JMP MoveGate",
+    )
+
+    # 8) Append MoveGate into bank 10's blank tail (576 bytes free; same bank as the jump
+    #    targets PRG010_CE64 / PRG010_MoveBlock).
+    _edit(
+        prg010,
+        "; Rest of ROM bank was empty\n",
+        "; Rest of ROM bank was empty\n" + MOVE_GATE_HOOK,
+        already="MoveGate:",
     )
 
 
