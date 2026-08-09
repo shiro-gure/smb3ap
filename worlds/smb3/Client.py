@@ -36,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-08-hub-persist-client"
+CLIENT_REV = "2026-08-09-hub-repaint"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -74,6 +74,12 @@ PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 # excluded by the tile gate; disasm/PRG/prg010.asm:1550-1567.)
 MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario completed-panel bitfield
 MAP_COMPLETIONS_LEN = 0x40
+# Map_RepaintReq: a free RAM byte the hub ROM patch (make_hub.py Part 3) polls on the
+# idle world-map loop — when nonzero it re-runs the map-load tail to repaint checkmarks
+# (keeping our Map_Completions bits) so client-written checkmarks appear right after
+# travel, without the player entering a level. LevLoad_Unused1 ($0701), unused in
+# vanilla. Harmless on an unpatched ROM (nothing reads it).
+MAP_REPAINT_REQ = 0x0701
 WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
 # Player overworld position (per-player arrays; player 0 = Mario). Logged in the
 # debug heartbeat to read exact hub coordinates while standing on a pipe.
@@ -477,9 +483,14 @@ class SMB3Client(BizHawkClient):
                 checked = ctx.checked_locations | ctx.locations_checked
                 desired = desired_completion_bytes(world, checked, completions)
                 if desired is not None:
+                    # Write the bits AND request a map repaint (Part-3 ROM hook makes the
+                    # checkmarks visible without a level dip). Both writes are guarded on
+                    # the completions value we read; if the game changed it meanwhile, the
+                    # write aborts harmlessly and we retry next pass.
                     ok = await guarded_write(
                         ctx.bizhawk_ctx,
-                        [(MAP_COMPLETIONS, list(desired), DOMAIN)],
+                        [(MAP_COMPLETIONS, list(desired), DOMAIN),
+                         (MAP_REPAINT_REQ, [0x01], DOMAIN)],
                         [(MAP_COMPLETIONS, list(completions), DOMAIN)],  # guard: unchanged
                     )
                     if ok:
@@ -488,7 +499,7 @@ class SMB3Client(BizHawkClient):
                             added = sum(bin(d & ~c).count("1")
                                         for d, c in zip(desired, completions))
                             logger.info("SMB3: re-asserted %d checkmark bit(s) for "
-                                        "World %d", added, world)
+                                        "World %d (repaint requested)", added, world)
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:

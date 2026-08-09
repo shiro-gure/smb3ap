@@ -196,6 +196,39 @@ MoveGate_Free:
 \tJMP PRG010_CE64\t\t; below threshold or cleared -> free movement
 """
 
+# PR 5c Part 3 — on-demand map repaint so the AP client's re-asserted checkmark bits
+# become visible right after arriving on a world map (not only after entering a level
+# and returning). The client sets a flag byte (Map_RepaintReq = LevLoad_Unused1 / $0701,
+# free again after the Part-1 gate was reverted); the idle map loop checks it once per
+# frame and, when set on a settled map, re-runs the game's own map-load tail
+# (PRG030_84D7 — the reload+full-redraw AFTER the completions clear loop, so it repaints
+# WITHOUT wiping the client's bits). Cost: a brief blank + fade-in, i.e. it looks like
+# the world reloading for ~half a second. Reuses proven code (low risk).
+#
+# Hook: retarget `JSR Map_DoMap` (prg030.asm:946, in the idle WorldMap_Loop, bank 30)
+# to `JSR MapRepaintCheck`. The check only fires on Map_Operation == $0D (Normal / idle
+# — not during pan/warp/level-clear animations), clears the flag first (so it runs once),
+# then JMPs to the reload tail; otherwise it just runs Map_DoMap as before.
+MAP_REPAINT_HOOK = """
+; ============================================================================
+; HUB 5c: on-demand map repaint. Reached from the hijacked `JSR Map_DoMap` in
+; the idle WorldMap_Loop. If the client set Map_RepaintReq (LevLoad_Unused1) and
+; the map is settled (Map_Operation == $0D), re-run the map-load tail to repaint
+; checkmarks (keeps the client's Map_Completions bits — no wipe). See make_hub.py.
+; ============================================================================
+MapRepaintCheck:
+\tLDA LevLoad_Unused1\t; Map_RepaintReq
+\tBEQ MapRepaintCheck_Normal\t; not requested -> normal map tick
+\tLDA Map_Operation
+\tCMP #$0D\t\t; only when the map is settled/normal (not mid-animation)
+\tBNE MapRepaintCheck_Normal
+\tLDA #$00
+\tSTA LevLoad_Unused1\t; consume the request (repaint once)
+\tJMP PRG030_84D7\t\t; reload+full-redraw tail (after the clear loop -> no wipe)
+MapRepaintCheck_Normal:
+\tJMP Map_DoMap\t\t; nothing to do -> the normal map tick (tail-call)
+"""
+
 # The World-9 hub map = VANILLA World9L with a MINIMAL edit: three $D7 (decorative
 # cloud) tiles turned into $DB (TILE_VERTPATHSKY, walk U/D) to add vertical links
 # between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
@@ -386,6 +419,31 @@ def phase_5c() -> None:
         "; Rest of ROM bank was empty\n",
         "; Rest of ROM bank was empty\n" + MOVE_GATE_HOOK,
         already="MoveGate:",
+    )
+
+    # --- Part 3: on-demand map repaint (client-triggered, reuses the map-load tail) ----
+    prg030 = os.path.join(PRG, "prg030.asm")
+
+    # 6) Retarget the idle-loop `JSR Map_DoMap` (prg030.asm:946) -> `JSR MapRepaintCheck`
+    #    (in-place operand change, non-shifting). Unique anchor.
+    _edit(
+        prg030,
+        "\tJSR Map_DoMap\t \t\t; Do the map!",
+        "\tJSR MapRepaintCheck\t; HUB 5c: repaint checkmarks if requested, else Map_DoMap",
+        already="JSR MapRepaintCheck",
+    )
+
+    # 7) Append MapRepaintCheck into bank 30's blank tail (74 bytes free again after the
+    #    Part-1 revert; PRG030_84D7 / Map_DoMap targets are reachable — 84D7 is same-bank,
+    #    Map_DoMap is JMP-able). Anchored on the blank-tail note, after any prior hooks.
+    _edit(
+        prg030,
+        "HubReturn:\n\tLDA #$08\t\t; World 9 (the hub)\n\tSTA World_Num\n"
+        "\tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)\n",
+        "HubReturn:\n\tLDA #$08\t\t; World 9 (the hub)\n\tSTA World_Num\n"
+        "\tJMP PRG030_84A0\t; re-init the world map (same target the original INC path used)\n"
+        + MAP_REPAINT_HOOK,
+        already="MapRepaintCheck:",
     )
 
 

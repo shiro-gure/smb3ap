@@ -4,6 +4,55 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-006 — Toad houses don't stay used after warp-whistle + revisit
+
+**Logged:** 2026-08-08
+**Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm toad-house path)
+**Severity:** Low — cosmetic/gameplay (a toad house can be re-run for another item).
+**Status:** Open — needs repro confirmation of the exact travel path.
+
+### What
+User reports: after using a **warp whistle** and revisiting a world, a previously-used toad house is no
+longer marked used and can be re-entered/re-run. Two things to confirm/untangle:
+1. **Whistle scope:** PR 5c dropped the planned infinite whistle; a *vanilla* warp whistle still exists
+   in-game (item $0C) and warps to World 9. Confirm the user's "warp whistle" is the vanilla item (not a
+   reintroduced hub whistle) and the exact path (whistle → hub → travel back → toad house un-used).
+2. **Root cause hypothesis:** toad-house "used" state is the same `Map_Completions` bit that travel wipes
+   (world-agnostic bitfield; see BUG-003). The client re-asserts *level* checkmarks only
+   (`_LEVEL_PANEL_BITS` filters `kind == "level"`), NOT toad houses — so a used toad house's bit is not
+   restored after travel, and its panel reverts to enterable/unused. If we want toad houses to "stay
+   used" across travel, the client must also re-assert toad-house bits (but toad houses are NOT AP
+   locations unless level_checks is on, and "used" is a play-state we may not be tracking server-side).
+   Decide: persist toad-house used-state (needs a client-side record of which were used) vs accept reset.
+
+---
+
+## BUG-005 — Cleared fortresses reset their (rubble/cleared) state after travel
+
+**Logged:** 2026-08-08
+**Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm fortress repaint)
+**Severity:** Low-Med — cosmetic on the map; AP fortress checks are safe (server-side).
+**Status:** Open — the fortress analogue of the level-checkmark persistence just fixed for levels.
+
+### What
+After completing a fortress and traveling away/back, the fortress panel reverts to its pre-clear
+(uncleared) look instead of staying as the cleared/rubble tile — same root cause as BUG-003 (the
+world-agnostic `Map_Completions` bitfield is wiped on every world load). The PR 5c client re-assertion
+(`desired_completion_bytes`) restores only **level** checkmark bits (`_LEVEL_PANEL_BITS`, `kind ==
+"level"`), so fortress bits are not restored and the fortress panel resets.
+
+### Fix direction
+Extend the client re-assertion to also set fortress panels' `Map_Completions` bits for the current
+world from the AP checked set. Caveats: (a) fortresses are NOT in the `PANELS` table (excluded by design
+— see BUG-002); their (offset,bit) coords would need to come from a fortress panel table (the parser saw
+them, gen_panels.py:153-161, but drops them). (b) The fortress repaint tile is the rubble/removable tile
+(`Map_Removable_Tiles`/`Map_RemoveTo_Tiles`, prg012.asm:135-143), NOT the M/L checkmark — setting the
+bit should make `Map_Reload_with_Completions` repaint the rubble correctly (verify it doesn't need the
+enterable-$16 treatment; forts are meant to become non-enterable rubble, which is fine). User request:
+"forts after completion should be similar to checkmark tiles" — i.e. persist like levels do.
+
+---
+
 ## BUG-004 — World 8 vehicle / pyramid panels are not AP checks and are non-re-enterable (follow-up)
 
 **Logged:** 2026-08-08

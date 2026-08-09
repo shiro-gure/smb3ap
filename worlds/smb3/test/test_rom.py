@@ -30,8 +30,10 @@ EXPECTED_DIFF_BYTES = 66
 # metatile $16 (CHR -> $88-$8B) + LevelCompGate repaint split (prg012) + MoveGate
 # walk-through (prg010). Completion PERSISTENCE across travel is client-driven (the
 # native bitfield is world-agnostic with no free RAM to segment it), so there is NO
-# ROM clear-loop gate — the vanilla wipe-on-load is intact.
-HUB_CRC32 = 0xB05334B0
+# ROM clear-loop gate — the vanilla wipe-on-load is intact. A Part-3 MapRepaintCheck
+# hook (idle-loop JSR Map_DoMap -> ) repaints on a client-set flag ($0701) so the
+# re-asserted checkmarks appear right after travel.
+HUB_CRC32 = 0x95E24341
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into
