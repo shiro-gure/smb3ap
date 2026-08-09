@@ -4,12 +4,41 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-004 — World 8 vehicle / pyramid panels are not AP checks and are non-re-enterable (follow-up)
+
+**Logged:** 2026-08-08
+**Area:** panel classification (`worlds/smb3/patch/gen_panels.py` `_EXCLUDE`) + re-entry (shared with PR 5c)
+**Severity:** Low — by-design today; logged as a scope decision, not a regression.
+**Status:** Open — deferred follow-up (raised while validating PR 5c in-game).
+
+### What
+World 8's map is mostly **non-numbered-level panels**: tanks (`W8T1L`/`W8T2L`), the battleship
+(`W8BSL`), the airship (`W8AirshipL`), hand-traps / "pyramids" (`W8H1L`-`W8H3L`), and Bowser's castle
+(`W8BCL`). Only **8-1 (`W801L`) and 8-2 (`W802L`)** are treated as normal levels; those two DO fire as
+AP checks and were verified in-game. The vehicle/pyramid panels are (a) intentionally excluded from AP
+locations by `gen_panels.py` `_EXCLUDE`, and (b) non-re-enterable after clear (same completion-tile
+coupling as levels — see PR 5c).
+
+### Scope to decide (not a straight bugfix)
+1. Should any of the vehicle/pyramid panels become **AP location checks**? (Airships already have their
+   own detection path; tanks/battleship/hand-traps currently have none.)
+2. Should they be **re-enterable** after clear? If yes, they can reuse the PR 5c level-repaint
+   decoupling — BUT the level path is discriminated from toad houses at `prg012.asm:355` (quadrant
+   range) vs `:343` (`Map_Completable_Tiles`); World-8 vehicles route via their own structure-table
+   types, so confirm which repaint branch they hit before extending.
+3. **Bowser's Castle (`W8BCL`) is the victory goal** — it must NOT become a repeatable check or a
+   re-enterable "cleared" panel. Exclude it explicitly from any of the above.
+
+---
+
 ## BUG-003 — Hub World: warp clears the on-map completion bitfield (checkmarks reset)
 
 **Logged:** 2026-08-08
 **Area:** World-9 hub (`worlds/smb3/patch/make_hub.py`; disasm map-init path)
 **Severity:** Low — cosmetic in-game only; **AP checks are NOT affected** (server-side; client re-syncs).
-**Status:** Open by design — **persistence deferred** (user decision) so the hub can ship. Fix later.
+**Status:** FIXED in PR 5c (`make_hub.py` `phase_5c`) — completions now persist across hub travel via
+the `Hub_Persist` clear-loop gate; cleared *levels* also become re-enterable with a checkmark (the
+level-repaint decoupling). Original deferred note kept below for history.
 
 ### What
 The World-9 warp path (and the planned return-to-hub) route through `PRG030_84A0`, whose clear loop
