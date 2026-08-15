@@ -4,6 +4,53 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-008 — A Hammer Bro the player did NOT beat is cleared from the map after revisiting
+
+**Logged:** 2026-08-15
+**Area:** roaming-enemy persistence (`worlds/smb3/Client.py` — `newly_defeated_bro_slots` /
+`_defeated_bro_slots` / `reblank_defeated_slots`)
+**Severity:** Low-Med — a Hammer Bro (and its item/coin-ship reward) can be lost without earning it;
+gameplay/reward bug, not a crash. AP checks unaffected (bros aren't checks).
+**Status:** Open — reported in-game 2026-08-15 (user did NOT defeat the bro; on revisiting the world it
+was gone). Introduced by the PR-5c bro-persistence feature (commit `441dcf2`).
+
+### What
+The client persists a defeated roaming enemy by recording, per world, which `Map_Objects_IDs` ($7F15)
+SLOT went from a BRO id → `$00`, then re-blanking that slot on revisit so a beaten bro stays gone. The
+symptom: a bro the player never beat gets recorded as defeated and is wrongly re-blanked on return.
+
+### Root-cause hypotheses (to confirm in-game / from the disasm)
+1. **Marching bros move/relocate slots.** Overworld Hammer Bros march around (`Map_Operation = $0B`,
+   "Hammer bros march around", `disasm/PRG/prg011.asm:~1413/1602`). If the engine relocates a bro to a
+   different slot (or transiently blanks slot _i_ while re-placing it), `newly_defeated_bro_slots` sees
+   slot _i_ go BRO→`$00` and records a false "defeat". On revisit the fresh bro in slot _i_ is then
+   re-blanked. This best matches "didn't beat him but he's gone."
+2. **Ambush-survived / walked-away.** If a bro's slot blanks when the player enters/leaves its ambush
+   without winning (e.g. the encounter ends without the defeat write at `prg011.asm:2037-2038`), that
+   also reads as a defeat. Need to confirm whether any non-victory path blanks the slot.
+3. **Transient blank during Map_Init/travel.** A pass that reads the object table mid-repopulation could
+   catch a slot at `$00` momentarily; the world-unchanged guard should prevent this, but verify the
+   guard holds across the `Map_Operation` states around travel.
+
+### Fix directions (not yet implemented)
+- **Gate detection on an actual defeat signal, not just slot→$00.** Only record a defeat when the blank
+  coincides with the vanilla defeat path — e.g. the player is standing on that object (`Map_HideObj` /
+  the clear-FX `Map_ClearLevelFXCnt` active, `prg011.asm:2000-2040`), or `Map_Operation` is the
+  enter/clear state — rather than any BRO→$00 transition. This rejects marching/relocation blanks.
+- **Identity-match instead of slot-match.** Track the bro's (id + position) and only treat it as defeated
+  when it disappears at rest, not when it moves. Requires reading `Map_Objects_Y/XLo/XHi` too.
+- **Only re-blank slots confirmed dead at a settled map** (`Map_Operation == $0D`) and cross-check the
+  position matches the recorded one.
+- Interim: consider disabling bro re-blank while a world's bros are still marching, or requiring two
+  consecutive settled passes showing the slot dead before recording it.
+
+### Repro
+1. `hub_world:true`. Enter a world with a Hammer Bro; do NOT beat it (walk past / let it march / leave).
+2. Travel back to the hub, then re-enter that world.
+3. Observe the bro is gone (wrongly re-blanked) even though it was never defeated.
+
+---
+
 ## BUG-007 — Player sprite is slightly misaligned with the map grid
 
 **Logged:** 2026-08-15
