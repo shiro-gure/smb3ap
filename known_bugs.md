@@ -4,12 +4,45 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-007 — Player sprite is slightly misaligned with the map grid
+
+**Logged:** 2026-08-15
+**Area:** hub landing / map player position (`worlds/smb3/patch/make_hub.py` `HubInit`; disasm map-coord path)
+**Severity:** Low — cosmetic only; movement, pipe entry, and level entry all work.
+**Status:** Open — deferred (user wants to fix later; not blocking).
+
+### What
+On the world map the player (Mario/Luigi) sprite sits slightly off from the panel/path tile grid — the
+sprite is not pixel-aligned with the tile the player logically occupies. Not breaking: the player can
+still walk, enter pipes, and enter levels normally; it's purely a visual offset.
+
+### Where to look when we fix it
+- `HubInit` sets the hub landing coords directly: `Map_Entered_X = $60`, `Map_Entered_Y = $50`
+  (`worlds/smb3/patch/make_hub.py`). The comment there already notes the pipe graphic is drawn a row
+  higher than the standing cell — a likely source of a half-tile visual offset. Check whether the chosen
+  `$60/$50` lands the sprite centered on the tile vs. the vanilla map-coord convention.
+- Coordinate convention (authoritative): `Map_GetTile` uses `col = World_Map_X >> 4`,
+  `tile_row = (World_Map_Y - $10) >> 4` (`disasm/PRG/prg010.asm:3295-3298`). If the sprite draw uses a
+  different Y base than the tile lookup, that's the misalignment.
+- Confirm whether the offset is hub-specific (only on the World-9 landing / custom pipe) or general to
+  all worlds after travel. If hub-only, it's a `HubInit` coord fix; if general, look at the shared map
+  reload tail (`PRG030_84D7`) restoring player position.
+- Repro: note the exact world/tile where it's most visible (user first saw it on the hub) so the fix can
+  be verified against that spot.
+
+---
+
 ## BUG-006 — Toad houses don't stay used after warp-whistle + revisit
 
 **Logged:** 2026-08-08
 **Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm toad-house path)
 **Severity:** Low — cosmetic/gameplay (a toad house can be re-run for another item).
-**Status:** Open — needs repro confirmation of the exact travel path.
+**Status:** FIXED 2026-08-15 (PR 5c) — the client re-assertion now covers toad houses, not just
+levels. `_DRAWABLE_PANEL_BITS` includes `kind == "toad_house"` and `desired_completion_bytes` re-asserts
+their `Map_Completions` bits on every map load (including the warp-whistle→hub→back path), so a used toad
+house stays marked. Caveat: this restores the bit only for toad-house locations the AP client knows are
+checked — i.e. when `level_checks` is on (toad houses become AP locations then). Verify in-game on the
+whistle path. Original hypothesis below (now the implemented fix).
 
 ### What
 User reports: after using a **warp whistle** and revisiting a world, a previously-used toad house is no
@@ -32,7 +65,12 @@ longer marked used and can be re-entered/re-run. Two things to confirm/untangle:
 **Logged:** 2026-08-08
 **Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm fortress repaint)
 **Severity:** Low-Med — cosmetic on the map; AP fortress checks are safe (server-side).
-**Status:** Open — the fortress analogue of the level-checkmark persistence just fixed for levels.
+**Status:** FIXED 2026-08-15 (PR 5c). `gen_panels.py` now emits `FORTRESS_PANEL_BITS` (world → ordered
+[(offset,bit)]); `desired_completion_bytes` re-asserts fortress bits by count — it lights the first N
+fortress panels of a world where N = how many of that world's fortress locations are checked (count-based
+to match `FORTRESS_COUNTS`; never more panels than exist, covering the W3/W5 "2 locations, 1 panel" case
+from BUG-002). The reload repaints the rubble/cleared tile from the restored bit — no `$16` enterable
+treatment needed (forts stay non-enterable rubble, which is correct). Fix direction below is what shipped.
 
 ### What
 After completing a fortress and traveling away/back, the fortress panel reverts to its pre-clear
