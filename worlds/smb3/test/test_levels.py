@@ -196,6 +196,54 @@ class TestDesiredCompletionBytes(unittest.TestCase):
         self.assertTrue(out[o] & b, "checked toad house's bit must be set for redraw")
 
 
+class TestBroPersistence(unittest.TestCase):
+    """The pure helpers behind roaming-enemy (Hammer/Boomerang/Heavy/Fire Bro)
+    persistence across hub travel."""
+
+    def test_detects_bro_defeat_transition(self) -> None:
+        from ..Client import newly_defeated_bro_slots
+        # slot 2 = Hammer Bro ($03) -> empty ($00); slot 3 stays a live bro.
+        prev = bytes([0x01, 0x02, 0x03, 0x03, 0x00])
+        cur = bytes([0x01, 0x02, 0x00, 0x03, 0x00])
+        self.assertEqual(newly_defeated_bro_slots(prev, cur), [2])
+
+    def test_detects_multiple_bros(self) -> None:
+        from ..Client import newly_defeated_bro_slots
+        # Two heavy bros ($05) cleared at once (e.g. a batched read).
+        prev = bytes([0x01, 0x02, 0x05, 0x05, 0x05])
+        cur = bytes([0x01, 0x02, 0x00, 0x00, 0x05])
+        self.assertEqual(newly_defeated_bro_slots(prev, cur), [2, 3])
+
+    def test_ignores_non_bro_and_baseline(self) -> None:
+        from ..Client import newly_defeated_bro_slots
+        # First pass (prev None) is a baseline, never a defeat.
+        self.assertEqual(newly_defeated_bro_slots(None, bytes(8)), [])
+        # A bro converting to a coin ship ($0B) is NOT a defeat we persist.
+        prev = bytes([0x03, 0x00])
+        cur = bytes([0x0B, 0x00])
+        self.assertEqual(newly_defeated_bro_slots(prev, cur), [])
+        # An airship ($02) vanishing is not a roaming-bro defeat.
+        self.assertEqual(newly_defeated_bro_slots(bytes([0x02]), bytes([0x00])), [])
+
+    def test_reblank_only_respawned_bros(self) -> None:
+        from ..Client import reblank_defeated_slots
+        # Recorded defeated: slots 2 and 4. Slot 2 respawned as a bro -> reblank; slot 4
+        # currently empty -> leave it; slot 3 not recorded -> untouched even if a bro.
+        cur = bytes([0x01, 0x02, 0x03, 0x03, 0x00])
+        self.assertEqual(reblank_defeated_slots({2, 4}, cur), [2])
+
+    def test_reblank_never_touches_non_bro(self) -> None:
+        from ..Client import reblank_defeated_slots
+        # A recorded slot that came back as a coin ship ($0B) is left alone (we only
+        # re-clear slots that respawned as an actual bro).
+        cur = bytes([0x00, 0x00, 0x0B])
+        self.assertEqual(reblank_defeated_slots({2}, cur), [])
+
+    def test_reblank_out_of_range_slot_safe(self) -> None:
+        from ..Client import reblank_defeated_slots
+        self.assertEqual(reblank_defeated_slots({99}, bytes(14)), [])
+
+
 class TestLocationsIds(unittest.TestCase):
     def test_all_ids_unique(self) -> None:
         codes = [d.code for d in location_table.values() if d.code is not None]

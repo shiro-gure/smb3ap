@@ -36,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-15-fort-redraw-reenter"
+CLIENT_REV = "2026-08-15-bro-persist"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -96,6 +96,24 @@ FORT_RUBBLE_TILES = (0x60, 0xE3)  # TILE_FORTRUBBLE / TILE_ALTRUBBLE => fortress
 # more than this many bits flip 0->1 in one pass, treat it as a bulk load and
 # re-baseline instead of crediting (BUG-001 guard).
 SAVE_STATE_FLIP_THRESHOLD = 3  # >this many 0->1 flips in one pass = a bulk load
+
+# --- Roaming map-enemy (Hammer/Boomerang/Heavy/Fire Bro, W7 plant) persistence -----
+# These wandering overworld enemies are NOT tracked by Map_Completions and have no
+# defeat bitfield. Defeating one just blanks its slot in Map_Objects_IDs ($7F15-$7F22)
+# to MAPOBJ_EMPTY ($00) in SRAM (disasm/PRG/prg011.asm:2037-2038). That state survives
+# a normal level-return reload, but the one-time "enter world" path re-runs Map_Init,
+# which repopulates Map_Objects_IDs fresh from the world's ROM object list
+# (disasm/PRG/prg011.asm:141-158) — reviving every defeated bro. The hub forces that
+# path on every arrival (HubReturn / pipe-entry both JMP PRG030_84A0), so the client
+# must remember which object SLOTS were defeated per world and re-blank them on arrival.
+#
+# Each bro occupies its own slot index (0-13, same index across the parallel object
+# arrays); a world can hold up to 3 (World 4/5/6). Slot 0 = HELP hand, slot 1 = Airship
+# — neither is a defeatable bro, so we only ever record/blank BRO-valued slots.
+MAP_OBJECT_IDS = 0x7F15        # $7F15-$7F22 live map-object IDs (0 = empty/defeated)
+MAP_OBJECT_IDS_LEN = 14
+# The roaming, defeat-and-gone map enemies (disasm/smb3.asm:2814-2818).
+MAP_BRO_IDS = frozenset({0x03, 0x04, 0x05, 0x06, 0x07})  # Hammer/Boomerang/Heavy/Fire/W7Plant
 
 DOMAIN = "System Bus"
 
@@ -235,6 +253,33 @@ def desired_completion_bytes(world: int, checked: "AbstractSet[int]",
     return out if changed else None
 
 
+def newly_defeated_bro_slots(prev: "Optional[bytes]", cur: "bytes"):
+    """Slot indices whose map-object ID went from a BRO id (alive) to $00 (defeated)
+    this pass — i.e. a roaming enemy the player just cleared. `prev` None (first pass)
+    yields [] (a baseline, never a defeat). Ignores non-bro transitions (e.g. a slot
+    naturally emptying, or a bro converting to a coin ship). Pure — unit-tested."""
+    if prev is None:
+        return []
+    out = []
+    for i in range(min(len(prev), len(cur))):
+        if prev[i] in MAP_BRO_IDS and cur[i] == 0x00:
+            out.append(i)
+    return out
+
+
+def reblank_defeated_slots(defeated: "AbstractSet[int]", cur: "bytes"):
+    """For every recorded-defeated slot that currently holds a live BRO id (i.e.
+    Map_Init just respawned it after hub travel), produce the (slot_index, new_id=$00)
+    writes needed to re-clear it. Returns [] when nothing needs re-blanking (steady
+    state), so the caller can skip the write. Only touches slots that came back as a
+    bro — never disturbs a coin ship, N-Spade, or a legitimately-alive object. Pure."""
+    writes = []
+    for slot in sorted(defeated):
+        if slot < len(cur) and cur[slot] in MAP_BRO_IDS:
+            writes.append(slot)
+    return writes
+
+
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
     """Toggle SMB3 debug logging (per-pass heartbeat of World_Num/rescue/lives). Usage: /smb3_debug [on|off]"""
     handler = getattr(self.ctx, "client_handler", None)
@@ -272,6 +317,14 @@ class SMB3Client(BizHawkClient):
         # Previous Map_Completions snapshot, to detect a 0->1 panel-bit flip
         # (fortress clear). None until baselined on the first pass after connect.
         self._prev_completions: Optional[bytes] = None
+        # Roaming-enemy (Hammer/Boomerang/Heavy/Fire Bro, W7 plant) persistence:
+        # per-world set of map-object SLOT indices the player has defeated, so we can
+        # re-blank them after hub travel re-runs Map_Init and respawns them. Keyed by
+        # 1-indexed world (World_Num+1). Persists for the client session.
+        self._defeated_bro_slots: "dict[int, set[int]]" = {}
+        # (world, Map_Objects_IDs snapshot) from the previous pass, to detect a
+        # bro->empty defeat transition — only meaningful when the world is unchanged.
+        self._prev_objects_world: "tuple[Optional[int], Optional[bytes]]" = (None, None)
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -332,6 +385,10 @@ class SMB3Client(BizHawkClient):
             self._boss_active = False
             self._boss_handled = False
             self._prev_completions = None
+            # Re-baseline the map-object snapshot (so a connect mid-map doesn't read a
+            # populated table as a fresh defeat). Keep _defeated_bro_slots — it's the
+            # client-local record of cleared bros and has no server-side equivalent.
+            self._prev_objects_world = (None, None)
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -361,7 +418,7 @@ class SMB3Client(BizHawkClient):
 
         try:
             object_ids, wand_state, completions, world_map_tile, world_num, \
-                rescue, lives, map_x, map_y, map_xhi = await read(ctx.bizhawk_ctx, [
+                rescue, lives, map_x, map_y, map_xhi, map_objects = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
                     (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -372,6 +429,7 @@ class SMB3Client(BizHawkClient):
                     (WORLD_MAP_X, 1, DOMAIN),
                     (WORLD_MAP_Y, 1, DOMAIN),
                     (WORLD_MAP_XHI, 1, DOMAIN),
+                    (MAP_OBJECT_IDS, MAP_OBJECT_IDS_LEN, DOMAIN),
                 ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
@@ -529,6 +587,44 @@ class SMB3Client(BizHawkClient):
                                         for d, c in zip(to_write, completions))
                             logger.info("SMB3: re-asserted %d checkmark bit(s) for "
                                         "World %d (repaint requested)", added, world)
+
+            # --- persist defeated roaming enemies (Hammer/Boomerang/Heavy/Fire Bro) ---
+            # Their "defeated" state is just their Map_Objects_IDs slot being $00, which
+            # hub travel wipes by re-running Map_Init. So (1) DETECT a bro->empty
+            # transition and remember that slot for this world; (2) after travel re-runs
+            # Map_Init and respawns the bro, RE-BLANK any slot we recorded defeated.
+            #
+            # Detection only compares against the previous pass when the world is
+            # unchanged (a world swap replaces the whole object table, so slot-vs-slot
+            # deltas would be meaningless). We store (world, objects) together for that.
+            cur_objects = bytes(map_objects)
+            world = world_num[0] + 1
+            prev_world, prev_objs = getattr(self, "_prev_objects_world", (None, None))
+            if prev_objs is not None and prev_world == world:
+                for slot in newly_defeated_bro_slots(prev_objs, cur_objects):
+                    self._defeated_bro_slots.setdefault(world, set()).add(slot)
+                    logger.info("SMB3: World %d roaming enemy defeated (slot %d) — "
+                                "will keep it cleared across travel.", world, slot)
+            # Re-blank any recorded-defeated slot the game just respawned.
+            defeated = self._defeated_bro_slots.get(world)
+            if defeated:
+                slots = reblank_defeated_slots(defeated, cur_objects)
+                if slots:
+                    ok = await guarded_write(
+                        ctx.bizhawk_ctx,
+                        [(MAP_OBJECT_IDS + s, [0x00], DOMAIN) for s in slots],
+                        [(MAP_OBJECT_IDS + s, [cur_objects[s]], DOMAIN) for s in slots],
+                    )
+                    if ok:
+                        # Reflect the write locally so we don't re-detect it as a defeat.
+                        buf = bytearray(cur_objects)
+                        for s in slots:
+                            buf[s] = 0x00
+                        cur_objects = bytes(buf)
+                        if self.debug:
+                            logger.info("SMB3: re-cleared %d respawned enemy slot(s) "
+                                        "in World %d: %s", len(slots), world, slots)
+            self._prev_objects_world = (world, cur_objects)
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
