@@ -378,6 +378,53 @@ class TestLockBitfield(unittest.TestCase):
         self.assertIsNone(desired_lock_bytes(w, allp, bytes(MAP_UNLOCK_BITS_LEN)))
 
 
+class TestUnlockedCommand(unittest.TestCase):
+    """The /smb3_unlocked command outputs via self.output (not the filtered logger)."""
+
+    def _run(self, handler_attrs, world_arg=""):
+        from ..Client import cmd_smb3_unlocked, SMB3Client
+
+        class FakeHandler:
+            game = SMB3Client.game
+            _level_access = handler_attrs.get("_level_access", True)
+            _unlocked_panels = handler_attrs.get("_unlocked_panels", set())
+
+        class FakeCtx:
+            game = SMB3Client.game
+            client_handler = FakeHandler()
+            checked_locations = set()
+            locations_checked = set()
+
+        outputs = []
+
+        class FakeProc:
+            ctx = FakeCtx()
+            def output(self, text):
+                outputs.append(text)
+
+        cmd_smb3_unlocked(FakeProc(), world_arg)
+        return outputs
+
+    def test_outputs_when_nothing_unlocked(self):
+        out = self._run({"_unlocked_panels": set()})
+        self.assertTrue(out)  # must print SOMETHING (not silently do nothing)
+        self.assertTrue(any("Access" in line for line in out))
+
+    def test_lists_unlocked_grouped_by_world(self):
+        from ..Client import gated_panels
+        # unlock the first World-1 and first World-3 gated panels
+        w1 = next(p[:3] for p in gated_panels() if p[0] == 1)
+        w3 = next(p[:3] for p in gated_panels() if p[0] == 3)
+        out = self._run({"_unlocked_panels": {w1, w3}})
+        text = "\n".join(out)
+        self.assertIn("World 1", text)
+        self.assertIn("World 3", text)
+
+    def test_off_reports_all_enterable(self):
+        out = self._run({"_level_access": False})
+        self.assertTrue(any("OFF" in line or "enterable" in line for line in out))
+
+
 class TestLevelAccessOn(SMB3TestBase):
     """level_access on (with its required deps hub_world + level_checks)."""
     options = {"level_access": 1, "hub_world": 1, "level_checks": 1}

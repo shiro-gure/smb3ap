@@ -37,7 +37,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-15-access-walkthrough"
+CLIENT_REV = "2026-08-15-unlocked-cmd"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -364,17 +364,22 @@ def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> No
 
 def cmd_smb3_unlocked(self: "BizHawkClientCommandProcessor", world: str = "") -> None:
     """List which levels you've UNLOCKED (level_access). Usage: /smb3_unlocked [world#].
-    Shows unlocked panels grouped by world; a ✓ marks ones you've already cleared."""
-    handler = getattr(self.ctx, "client_handler", None)
-    if handler is None or handler.game != SMB3Client.game:
-        logger.warning("This command can only be used when playing Super Mario Bros. 3.")
+    Shows unlocked panels grouped by world; a * marks ones you've already cleared."""
+    # self.output(...) writes straight to the client text window (logger.info may be
+    # filtered by the UI), so command results always print.
+    if getattr(self.ctx, "game", None) != SMB3Client.game:
+        self.output("This command only works while playing Super Mario Bros. 3.")
         return
-    if not handler._level_access:
-        logger.info("SMB3: level_access is OFF for this slot — every level is enterable.")
+    handler = getattr(self.ctx, "client_handler", None)
+    if handler is None:
+        self.output("SMB3 client not ready yet — connect and load the ROM first.")
+        return
+    if not getattr(handler, "_level_access", False):
+        self.output("level_access is OFF for this slot — every level is enterable.")
         return
     unlocked = handler._unlocked_panels
     if not unlocked:
-        logger.info("SMB3: no levels unlocked yet — find an '… Access' item to open one.")
+        self.output("No levels unlocked yet — find an '... Access' item to open one.")
         return
     checked = self.ctx.checked_locations | self.ctx.locations_checked
     want_world = None
@@ -382,7 +387,8 @@ def cmd_smb3_unlocked(self: "BizHawkClientCommandProcessor", world: str = "") ->
         try:
             want_world = int(world.strip())
         except ValueError:
-            pass
+            self.output(f"'{world.strip()}' is not a world number.")
+            return
     by_world: "dict[int, list[str]]" = {}
     for panel in unlocked:
         w = panel[0]
@@ -391,14 +397,13 @@ def cmd_smb3_unlocked(self: "BizHawkClientCommandProcessor", world: str = "") ->
         name = _PANEL_DISPLAY_NAME.get(panel, str(panel))
         loc_id = _PANEL_CHECK_LOCID.get(panel)
         done = loc_id is not None and loc_id in checked
-        by_world.setdefault(w, []).append(("✓ " if done else "• ") + name)
+        by_world.setdefault(w, []).append(("* " if done else "  ") + name)
     if not by_world:
-        logger.info("SMB3: nothing unlocked%s.",
-                    f" in World {want_world}" if want_world else "")
+        self.output("Nothing unlocked" + (f" in World {want_world}." if want_world else "."))
         return
-    logger.info("SMB3 unlocked levels (✓ = already cleared):")
+    self.output("Unlocked levels (* = already cleared):")
     for w in sorted(by_world):
-        logger.info("  World %d: %s", w, ", ".join(sorted(by_world[w])))
+        self.output(f"  World {w}: " + ", ".join(sorted(by_world[w])))
 
 
 class SMB3Client(BizHawkClient):
@@ -516,6 +521,14 @@ class SMB3Client(BizHawkClient):
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
         from worlds._bizhawk import read, guarded_write, RequestFailedError
+
+        # Ensure the /smb3_* commands are registered (belt-and-suspenders: validate_rom
+        # registers them too, but re-do it here so they're present even if the watcher
+        # starts before/without a fresh validate_rom).
+        if "smb3_unlocked" not in ctx.command_processor.commands:
+            ctx.command_processor.commands["smb3_unlocked"] = cmd_smb3_unlocked
+        if "smb3_debug" not in ctx.command_processor.commands:
+            ctx.command_processor.commands["smb3_debug"] = cmd_smb3_debug
 
         # Log (once) why we bail before doing any work — these are the usual
         # reasons "nothing happens": not connected to the server, or no slot yet.
