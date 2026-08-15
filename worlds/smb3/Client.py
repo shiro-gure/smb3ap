@@ -27,6 +27,7 @@ from worlds._bizhawk.client import BizHawkClient
 
 from .Locations import airship_location_id, fortress_location_ids, location_name_to_id
 from .Locations import level_location_name
+from .Locations import BASE_ID, access_item_codes, access_item_name, gated_panels
 from .panels import PANELS, FORTRESS_PANEL_BITS
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-15-select-warp"
+CLIENT_REV = "2026-08-15-level-access"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -114,6 +115,28 @@ MAP_OBJECT_IDS = 0x7F15        # $7F15-$7F22 live map-object IDs (0 = empty/defe
 MAP_OBJECT_IDS_LEN = 14
 # The roaming, defeat-and-gone map enemies (disasm/smb3.asm:2814-2818).
 MAP_BRO_IDS = frozenset({0x03, 0x04, 0x05, 0x06, 0x07})  # Hammer/Boomerang/Heavy/Fire/W7Plant
+
+# --- Level Access (the level_access option) — client-written "unlocked" bitfield -----
+# When level_access is on, the hub ROM's entry-gate hook (at the A-press enter choke point
+# PRG010_CEA7) refuses to ENTER a panel unless its bit is set in a per-panel "unlocked"
+# bitfield. The client owns that state: it tracks which "… Access" items it has received
+# and, on each world's map, writes that world's unlocked bits — indexed EXACTLY like
+# Map_Completions: byte_offset = (World_Map_XHi<<4)|(World_Map_X>>4), bit = the panel's row
+# bit — to a free WRAM region. Polarity: 1 = UNLOCKED.
+#
+# Home: $054B-$0586 is unused in the "$05xx World Map context" page (disasm/smb3.asm:1504;
+# no code references it — grep-confirmed). It's a context-union page (clobbered inside a
+# level/bonus game), but the client rewrites it every OVERWORLD pass and the hook only
+# reads it on the overworld at entry, so that's fine.
+#
+# Default-OPEN safety: the ROM hook can't know if level_access is on, so a 1-byte ACTIVE
+# flag gates it. The hook only enforces when the flag is nonzero; the client sets it to 1
+# ONLY when level_access is enabled (and never on a level_access-off game), so entry is
+# never wrongly blocked. Highest offset a real gated panel uses is 0x28 (World 8), so a
+# 0x38-byte window covers every panel with margin.
+MAP_UNLOCK_FLAG = 0x054B       # 1 = entry-gate active (client-set when level_access on)
+MAP_UNLOCK_BITS = 0x0550       # unlocked bitfield, indexed like Map_Completions (1=unlocked)
+MAP_UNLOCK_BITS_LEN = 0x30     # 48 bytes ($0550-$057F); covers offsets 0..0x2F (max real 0x28)
 
 DOMAIN = "System Bus"
 
@@ -280,6 +303,35 @@ def reblank_defeated_slots(defeated: "AbstractSet[int]", cur: "bytes"):
     return writes
 
 
+# Reverse map for level access: received Access-item id -> (world, byte_offset, bit_mask).
+# Built once from the canonical gated-panel table + Access-item codes (Locations.py).
+_ACCESS_ID_TO_PANEL: "dict[int, tuple[int, int, int]]" = {}
+for (_w, _off, _bit, _base) in gated_panels():
+    _aid = BASE_ID + access_item_codes[access_item_name(_base)]
+    _ACCESS_ID_TO_PANEL[_aid] = (_w, _off, _bit)
+
+# Per-world index of the panels that can be unlocked: world -> [(offset, bit), ...].
+_UNLOCKABLE_BY_WORLD: "dict[int, list[tuple[int, int]]]" = {}
+for (_w, _off, _bit, _base) in gated_panels():
+    _UNLOCKABLE_BY_WORLD.setdefault(_w, []).append((_off, _bit))
+
+
+def desired_unlock_bytes(world: int, unlocked_panels: "AbstractSet[tuple]",
+                         cur: "bytes"):
+    """Return a 64-byte "unlocked" image for `world` (polarity 1 = UNLOCKED), with the bit
+    SET for every unlocked (world, offset, bit) panel in that world, or None if it already
+    matches `cur` (so the caller can skip the write).
+
+    Unlike the checkmark writer, this is AUTHORITATIVE, not additive: a panel that is not
+    unlocked must read 0 (locked), so we build the target image from scratch each pass
+    (starting all-locked) and compare against `cur`. Pure — unit-tested."""
+    out = bytearray(MAP_UNLOCK_BITS_LEN)
+    for offset, bit in _UNLOCKABLE_BY_WORLD.get(world, ()):
+        if (world, offset, bit) in unlocked_panels and offset < len(out):
+            out[offset] |= bit
+    return out if bytes(out) != bytes(cur[:MAP_UNLOCK_BITS_LEN]) else None
+
+
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
     """Toggle SMB3 debug logging (per-pass heartbeat of World_Num/rescue/lives). Usage: /smb3_debug [on|off]"""
     handler = getattr(self.ctx, "client_handler", None)
@@ -325,6 +377,14 @@ class SMB3Client(BizHawkClient):
         # (world, Map_Objects_IDs snapshot) from the previous pass, to detect a
         # bro->empty defeat transition — only meaningful when the world is unchanged.
         self._prev_objects_world: "tuple[Optional[int], Optional[bytes]]" = (None, None)
+        # Level access (level_access option): panels unlocked by received "… Access"
+        # items, as a set of (world, offset, bit). Rebuilt each pass from items_received
+        # (idempotent), so it needs no connect reset. The client writes the current
+        # world's unlocked bitfield to RAM for the entry-gate ROM hook to read.
+        self._unlocked_panels: "set[tuple[int, int, int]]" = set()
+        # Whether this slot enabled level_access (from slot_data). When True the client
+        # arms the ROM entry-gate (writes the ACTIVE flag) and drives the unlock bitfield.
+        self._level_access = False
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -358,7 +418,8 @@ class SMB3Client(BizHawkClient):
 
         ctx.game = self.game
         ctx.items_handling = 0b111  # full remote items
-        ctx.want_slot_data = False
+        # Need slot_data to know if level_access is on (so we arm the entry-gate hook).
+        ctx.want_slot_data = True
         ctx.watcher_timeout = POLL_NORMAL  # boosted dynamically during boss fights
         # Register the /smb3_debug command (idempotent across re-validations).
         if "smb3_debug" not in ctx.command_processor.commands:
@@ -389,6 +450,11 @@ class SMB3Client(BizHawkClient):
             # populated table as a fresh defeat). Keep _defeated_bro_slots — it's the
             # client-local record of cleared bros and has no server-side equivalent.
             self._prev_objects_world = (None, None)
+            # Read level_access from slot_data (arms the entry-gate ROM hook).
+            slot_data = args.get("slot_data") or {}
+            self._level_access = bool(slot_data.get("level_access", 0))
+            if self._level_access:
+                logger.info("SMB3: level_access is ON — entry gating active.")
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -418,7 +484,8 @@ class SMB3Client(BizHawkClient):
 
         try:
             object_ids, wand_state, completions, world_map_tile, world_num, \
-                rescue, lives, map_x, map_y, map_xhi, map_objects = await read(ctx.bizhawk_ctx, [
+                rescue, lives, map_x, map_y, map_xhi, map_objects, unlock_bits, \
+                unlock_flag = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
                     (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -430,6 +497,8 @@ class SMB3Client(BizHawkClient):
                     (WORLD_MAP_Y, 1, DOMAIN),
                     (WORLD_MAP_XHI, 1, DOMAIN),
                     (MAP_OBJECT_IDS, MAP_OBJECT_IDS_LEN, DOMAIN),
+                    (MAP_UNLOCK_BITS, MAP_UNLOCK_BITS_LEN, DOMAIN),
+                    (MAP_UNLOCK_FLAG, 1, DOMAIN),
                 ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
@@ -626,34 +695,73 @@ class SMB3Client(BizHawkClient):
                                         "in World %d: %s", len(slots), world, slots)
             self._prev_objects_world = (world, cur_objects)
 
+            # --- level access: arm the gate + write this world's "unlocked" bitfield ---
+            # Only when this slot enabled level_access (from slot_data). Rebuild the
+            # unlocked-panel set from received "… Access" items (idempotent), then write
+            # the CURRENT world's unlocked bits (authoritative image, 1 = unlocked) so the
+            # entry-gate ROM hook can read them, and set the ACTIVE flag so the hook
+            # enforces. On a level_access-off game we never touch either, so entry is never
+            # wrongly blocked (the hook stays inert with its flag clear).
+            if self._level_access:
+                self._unlocked_panels = {
+                    _ACCESS_ID_TO_PANEL[it.item]
+                    for it in ctx.items_received
+                    if it.item in _ACCESS_ID_TO_PANEL
+                }
+                world = world_num[0] + 1
+                want = desired_unlock_bytes(world, self._unlocked_panels, unlock_bits)
+                writes = []
+                if want is not None:
+                    writes.append((MAP_UNLOCK_BITS, list(want), DOMAIN))
+                if unlock_flag[0] != 0x01:
+                    writes.append((MAP_UNLOCK_FLAG, [0x01], DOMAIN))
+                if writes:
+                    await guarded_write(
+                        ctx.bizhawk_ctx, writes,
+                        # Guard on the values we read so a concurrent game write aborts it.
+                        [(MAP_UNLOCK_BITS, list(unlock_bits), DOMAIN),
+                         (MAP_UNLOCK_FLAG, list(unlock_flag), DOMAIN)],
+                    )
+
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
                 logger.warning("SMB3: Player_RescuePrincess set — sending victory.")
                 await ctx.send_msgs([{
                     "cmd": "StatusUpdate", "status": ClientStatus.CLIENT_GOAL}])
 
-            # --- grant received items (POC: every filler item == +1 life) ---
+            # --- grant received items (POC: every FILLER item == +1 life) ---
             #
             # POC limitation: dedup state lives only on the client (no ROM scratch
             # byte without ASM). On (re)connect the server re-sends every prior
             # item, so we baseline applied_items the first pass and only grant
             # items that arrive after that. Items received while disconnected are
             # not retroactively granted.
+            #
+            # Level Access items are PROGRESSION (they set the unlock bitfield above,
+            # handled idempotently from the full received list) — they must NOT grant a
+            # life. So the lives grant only counts newly-arrived NON-Access items.
             received = ctx.items_received
             if not self.synced:
                 self.applied_items = len(received)
                 self.synced = True
             elif len(received) > self.applied_items:
-                to_apply = len(received) - self.applied_items
-                new_lives = min(0x99, lives[0] + to_apply)
-                ok = await guarded_write(
-                    ctx.bizhawk_ctx,
-                    [(PLAYER_LIVES, [new_lives], DOMAIN)],
-                    [(PLAYER_LIVES, [lives[0]], DOMAIN)],  # guard: lives unchanged
-                )
-                if ok:
-                    logger.warning("SMB3: granted %d item(s) -> lives $%02X",
-                                   to_apply, new_lives)
+                new_slice = received[self.applied_items:]
+                to_apply = sum(1 for it in new_slice
+                               if it.item not in _ACCESS_ID_TO_PANEL)
+                if to_apply:
+                    new_lives = min(0x99, lives[0] + to_apply)
+                    ok = await guarded_write(
+                        ctx.bizhawk_ctx,
+                        [(PLAYER_LIVES, [new_lives], DOMAIN)],
+                        [(PLAYER_LIVES, [lives[0]], DOMAIN)],  # guard: lives unchanged
+                    )
+                    if ok:
+                        logger.warning("SMB3: granted %d item(s) -> lives $%02X",
+                                       to_apply, new_lives)
+                        self.applied_items = len(received)
+                else:
+                    # Only Access items arrived — nothing to grant, but advance the
+                    # dedup cursor so we don't reconsider them next pass.
                     self.applied_items = len(received)
         except Exception:
             logger.exception("SMB3 watcher crashed after read")

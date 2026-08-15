@@ -153,6 +153,15 @@ class SMB3World(World):
         pool += [self.create_item(self.get_filler_item_name()) for _ in range(remaining)]
         self.multiworld.itempool += pool
 
+    def fill_slot_data(self) -> dict:
+        # The client needs to know when to drive the entry-gate (level_access) so it can
+        # arm the ROM hook's ACTIVE flag; and hub_world so it only writes hub-only RAM.
+        return {
+            "level_access": int(bool(self.options.level_access)),
+            "hub_world": int(bool(self.options.hub_world)),
+            "level_checks": int(bool(self.options.level_checks)),
+        }
+
     def generate_output(self, output_directory: str) -> None:
         # Emit an .apsmb3 patch (base patch = on-map checkmark; per-seed tokens
         # added in later PRs). Skipped gracefully when no base ROM is configured

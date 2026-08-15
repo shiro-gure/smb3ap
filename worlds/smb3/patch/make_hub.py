@@ -270,6 +270,82 @@ SelectWarpCheck_Pass:
 \tJMP MapRepaintCheck\t; PR-5c repaint tick (bank 30, mapped at $8000 during the loop)
 """
 
+# PR 7 — level-access ENTRY gate. Blocks ENTERING a panel unless its bit is set in the
+# client-written "unlocked" bitfield ($0550, indexed like Map_Completions; 1 = unlocked).
+# Walking onto/across a locked panel is unaffected (that's the movement path / MoveGate).
+# Hub-only (in make_hub.py), so it only exists in basepatch_hub.bsdiff4.
+#
+# Hijack the enter choke point PRG010_CEA7 (prg010.asm:2751-2752, `LDA #$10 / STA
+# Map_Operation`, 5 bytes) with `JMP EntryGate` + NOP NOP. EntryGate (bank-10 tail, same
+# bank as the choke point) does:
+#   - If the ACTIVE flag ($054B) is 0 -> gate inert: run the stolen two instructions and
+#     JMP PRG010_CEAC (the natural continuation). Guarantees default-OPEN when the client
+#     isn't driving (level_access off / unpatched-intent), so entry is never wrongly blocked.
+#   - Else compute the panel's (column offset, row bit) exactly like Map_MarkLevelComplete
+#     (prg011.asm:4586-4622) — MINUS the Luigi +$40 (the client indexes the Mario half) —
+#     using inline copies of Map_CompleteY / Map_CompleteBit (bank 11's are unreachable
+#     here). Read the unlocked bitfield at [offset]; AND the row bit:
+#       nonzero (unlocked) -> run the stolen instructions, JMP PRG010_CEAC (enter);
+#       zero (locked)      -> JMP PRG010_CEE1 (no-entry path; player stays on the map).
+# X is NOT Player_Current at the choke point, so we LDX Player_Current ourselves.
+# Temp_Var1/Temp_Var13 are the same zero-page scratch the vanilla routine uses (free here).
+ENTRY_GATE_HOOK = """
+; ============================================================================
+; HUB 7: level-access ENTRY gate. Reached from the hijacked enter choke point
+; (PRG010_CEA7). Blocks entering a locked panel per the client's unlocked bitfield
+; at Map_UnlockBits ($0550); inert unless Map_UnlockActive ($054B) is set. Lives in
+; bank 10's blank tail (same bank as the choke point). See make_hub.py.
+; ============================================================================
+Map_UnlockActive\t= $054B\t; 1 = entry gate active (client-set when level_access on)
+Map_UnlockBits\t= $0550\t; unlocked bitfield, indexed like Map_Completions (1 = unlocked)
+
+EntryGate_CompleteY:
+\t.byte $20, $30, $40, $50, $60, $70, $80
+EntryGate_CompleteBit:
+\t.byte $80, $40, $20, $10, $08, $04, $02, $01
+
+EntryGate:
+\tLDA Map_UnlockActive
+\tBEQ EntryGate_Enter\t; gate inert -> enter (default open)
+\tLDX Player_Current\t; X is NOT set up at the choke point
+\t; --- row index (0-7) from World_Map_Y, like prg011.asm:4586-4596 ---
+\tLDY #$06\t\t; (Map_CompleteY has 7 entries; start at last index)
+\tLDA <World_Map_Y,X
+EntryGate_RowLoop:
+\tCMP EntryGate_CompleteY,Y
+\tBEQ EntryGate_RowFound
+\tDEY
+\tBPL EntryGate_RowLoop
+\tLDY #$07\t\t; none matched -> assume bottom row
+EntryGate_RowFound:
+\tSTY <Temp_Var13\t; row index -> scratch
+\t; --- column offset from XHi/X, like prg011.asm:4601-4613 (no Luigi +$40) ---
+\tLDA <World_Map_XHi,X
+\tASL A
+\tASL A
+\tASL A
+\tASL A
+\tSTA <Temp_Var1\t; screen * 16
+\tLDA <World_Map_X,X
+\tLSR A
+\tLSR A
+\tLSR A
+\tLSR A
+\tORA <Temp_Var1\t; column offset (0-63) -> A
+\tTAY\t\t; -> Y (bitfield byte index)
+\t; --- test unlocked bit ---
+\tLDX <Temp_Var13\t; X = row index
+\tLDA Map_UnlockBits,Y
+\tAND EntryGate_CompleteBit,X
+\tBEQ EntryGate_Blocked\t; bit clear -> locked -> refuse entry
+EntryGate_Enter:
+\tLDA #$10\t\t; (stolen from PRG010_CEA7) begin "enter level" effect
+\tSTA Map_Operation
+\tJMP PRG010_CEAC\t; continue the vanilla enter path
+EntryGate_Blocked:
+\tJMP PRG010_CEE1\t; no-entry path (WorldMap_UpdateAndDraw) -> stays on the map
+"""
+
 # The World-9 hub map = VANILLA World9L with a MINIMAL edit: three $D7 (decorative
 # cloud) tiles turned into $DB (TILE_VERTPATHSKY, walk U/D) to add vertical links
 # between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
@@ -518,9 +594,38 @@ def phase_5d() -> None:
     )
 
 
+def phase_5e() -> None:
+    """PR 7 — level-access ENTRY gate. Hijacks the enter choke point PRG010_CEA7 to
+    consult the client's unlocked bitfield, and appends the EntryGate routine into bank
+    10's blank tail (after SelectWarpCheck). Requires phase_5a..5d."""
+    print("phase 5e — level-access entry gate:")
+    prg010 = os.path.join(PRG, "prg010.asm")
+
+    # 1) Hijack the enter trigger (LDA #$10 / STA Map_Operation, 5 bytes) with
+    #    JMP EntryGate + NOP NOP (5 bytes, non-shifting). EntryGate re-runs the two stolen
+    #    instructions on the enter path, or diverts to the no-entry path when locked.
+    _edit(
+        prg010,
+        "\tLDA #$10\n\tSTA Map_Operation\t; Map_Operation = $10 (begin \"enter level\" effect)",
+        "\tJMP EntryGate\t; HUB 7: level-access entry gate (was: LDA #$10 / STA Map_Operation)\n"
+        "\tNOP\n\tNOP\t\t; (pad to preserve the 5-byte length; non-shifting)",
+        already="JMP EntryGate",
+    )
+
+    # 2) Append EntryGate into bank 10's blank tail, after SelectWarpCheck (same bank as
+    #    the choke point + the PRG010_CEAC / PRG010_CEE1 targets, so all JMPs are in-bank).
+    _edit(
+        prg010,
+        "SelectWarpCheck_Pass:\n\tJMP MapRepaintCheck\t; PR-5c repaint tick (bank 30, mapped at $8000 during the loop)\n",
+        "SelectWarpCheck_Pass:\n\tJMP MapRepaintCheck\t; PR-5c repaint tick (bank 30, mapped at $8000 during the loop)\n"
+        + ENTRY_GATE_HOOK,
+        already="EntryGate:",
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase", choices=["5a", "5b", "5c", "5d", "all"], default="5a")
+    ap.add_argument("--phase", choices=["5a", "5b", "5c", "5d", "5e", "all"], default="5a")
     args = ap.parse_args()
     if args.phase in ("5a", "all"):
         phase_5a()
@@ -530,6 +635,8 @@ def main() -> None:
         phase_5c()
     if args.phase in ("5d", "all"):
         phase_5d()
+    if args.phase in ("5e", "all"):
+        phase_5e()
     print("done.")
 
 

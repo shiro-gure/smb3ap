@@ -36,7 +36,10 @@ EXPECTED_DIFF_BYTES = 66
 # PR 6 adds SelectWarpCheck (bank 10): pressing SELECT on any world map warps to the
 # hub (World 9) via HubReturn. The map-loop tick (prg030:946) now targets it, falling
 # through to MapRepaintCheck. Hub-only (in basepatch_hub.bsdiff4).
-HUB_CRC32 = 0x4D7753AF
+# PR 7 adds EntryGate (bank 10): the level-access ENTRY gate hijacks PRG010_CEA7 and
+# refuses entry to a locked panel per the client's unlocked bitfield ($0550), inert
+# unless the ACTIVE flag ($054B) is set. Hub-only.
+HUB_CRC32 = 0x62F9B497
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into
