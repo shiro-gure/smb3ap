@@ -229,6 +229,47 @@ MapRepaintCheck_Normal:
 \tJMP Map_DoMap\t\t; nothing to do -> the normal map tick (tail-call)
 """
 
+# PR 6 — Select-button warp to the hub. Pressing SELECT on any world's overworld map
+# warps the player to World 9 (the hub), like an always-available warp whistle. This
+# lives ONLY in the hub patch (make_hub.py), so it exists only when hub_world is on.
+#
+# Select ($20 = PAD_SELECT) is unused on the overworld map in vanilla, so it's free to
+# hook. The idle map loop's tick (prg030.asm:946) is already retargeted to MapRepaintCheck
+# by phase 5c — but bank 30's free tail ($9FB6, 74 bytes) is nearly full after HubInit /
+# HubReturn / MapRepaintCheck, so the Select logic can't fit there. Instead we add a small
+# SelectWarpCheck routine in bank 10's roomy blank tail (where MoveGate already lives; bank
+# 10 is mapped at $C000 during the map loop) and point :946 at IT. SelectWarpCheck does the
+# Select test, then falls through to `JMP MapRepaintCheck` (bank 30, mapped at $8000 during
+# the loop, so the cross-bank JMP resolves) to preserve the repaint behavior.
+#
+# On a settled map (Map_Operation == $0D), if SELECT is newly pressed AND we're not already
+# in the hub (World_Num != 8), JMP HubReturn (LDA #$08 / STA World_Num / JMP PRG030_84A0).
+# PRG030_84A0 re-inits the map and calls HubInit (World_Num==8 branch), which lands the
+# player ON the W2 pipe — clean, walkable, no extra coordinate setup. Pad_Input is one-shot
+# (newly-pressed), so it fires once per press.
+SELECT_WARP_HOOK = """
+; ============================================================================
+; HUB 6: SELECT-button warp to World 9. Reached from the hijacked map-loop tick
+; (prg030.asm:946 -> JSR SelectWarpCheck). On a settled map, a fresh SELECT press
+; (when not already in the hub) warps to the hub via HubReturn; otherwise falls
+; through to MapRepaintCheck (the PR-5c repaint tick). Lives in bank 10's blank
+; tail (mapped at $C000 during the map loop). See worlds/smb3/patch/make_hub.py.
+; ============================================================================
+SelectWarpCheck:
+\tLDA Map_Operation
+\tCMP #$0D\t\t; settled/normal map?
+\tBNE SelectWarpCheck_Pass\t; mid-animation -> skip the Select check
+\tLDA World_Num
+\tCMP #$08\t\t; already in the hub (World 9)?
+\tBEQ SelectWarpCheck_Pass\t; yes -> no self-warp
+\tLDA <Pad_Input
+\tAND #PAD_SELECT\t; SELECT newly pressed this frame?
+\tBEQ SelectWarpCheck_Pass\t; no -> normal repaint tick
+\tJMP HubReturn\t\t; warp to World 9 (re-inits map + HubInit lands on the W2 pipe)
+SelectWarpCheck_Pass:
+\tJMP MapRepaintCheck\t; PR-5c repaint tick (bank 30, mapped at $8000 during the loop)
+"""
+
 # The World-9 hub map = VANILLA World9L with a MINIMAL edit: three $D7 (decorative
 # cloud) tiles turned into $DB (TILE_VERTPATHSKY, walk U/D) to add vertical links
 # between the pipe rows. Everything else (sand island, water, pipes, and the vanilla
@@ -447,9 +488,39 @@ def phase_5c() -> None:
     )
 
 
+def phase_5d() -> None:
+    """PR 6 — SELECT-button warp to the hub. Adds a SelectWarpCheck routine in bank 10's
+    blank tail and re-points the map-loop tick at it (it falls through to MapRepaintCheck).
+    Requires phase_5a..5c (HubReturn + MapRepaintCheck must already exist)."""
+    print("phase 5d — Select-button warp to World 9:")
+    prg010 = os.path.join(PRG, "prg010.asm")
+    prg030 = os.path.join(PRG, "prg030.asm")
+
+    # 1) Re-point the idle-loop tick from JSR MapRepaintCheck (set by phase 5c) to
+    #    JSR SelectWarpCheck. SelectWarpCheck falls through to MapRepaintCheck, so the
+    #    PR-5c repaint behavior is preserved; the Select warp is layered in front.
+    _edit(
+        prg030,
+        "\tJSR MapRepaintCheck\t; HUB 5c: repaint checkmarks if requested, else Map_DoMap",
+        "\tJSR SelectWarpCheck\t; HUB 6: Select->hub warp, else repaint tick (MapRepaintCheck)",
+        already="JSR SelectWarpCheck",
+    )
+
+    # 2) Append SelectWarpCheck into bank 10's blank tail (same bank as MoveGate; mapped at
+    #    $C000 during the map loop, so JSR from bank 30 and JMP MapRepaintCheck/HubReturn to
+    #    bank 30 resolve). Anchored after MoveGate so both hub-10 routines share the tail.
+    _edit(
+        prg010,
+        "MoveGate_Free:\n\tJMP PRG010_CE64\t\t; below threshold or cleared -> free movement\n",
+        "MoveGate_Free:\n\tJMP PRG010_CE64\t\t; below threshold or cleared -> free movement\n"
+        + SELECT_WARP_HOOK,
+        already="SelectWarpCheck:",
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase", choices=["5a", "5b", "5c", "all"], default="5a")
+    ap.add_argument("--phase", choices=["5a", "5b", "5c", "5d", "all"], default="5a")
     args = ap.parse_args()
     if args.phase in ("5a", "all"):
         phase_5a()
@@ -457,6 +528,8 @@ def main() -> None:
         phase_5b()
     if args.phase in ("5c", "all"):
         phase_5c()
+    if args.phase in ("5d", "all"):
+        phase_5d()
     print("done.")
 
 
