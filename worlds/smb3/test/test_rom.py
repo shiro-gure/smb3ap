@@ -40,7 +40,9 @@ EXPECTED_DIFF_BYTES = 66
 # refuses entry to a LOCKED panel per the client's lock bitfield ($0550, 1=locked; only
 # gated-and-not-yet-unlocked panels get a bit, so hub pipes / non-gated panels stay
 # open), inert unless the ACTIVE flag ($054B) is set. Hub-only.
-HUB_CRC32 = 0x78546EDF
+# PR 7 follow-up: MoveGate lets you WALK ACROSS any level while level_access is active
+# (Map_UnlockActive set) — you can always traverse; entry stays gated by EntryGate.
+HUB_CRC32 = 0x57511B41
 START_WORLD_OFFSET = 0x30CC3
 
 # realpath so this resolves the true repo even when worlds/smb3 is a symlink into

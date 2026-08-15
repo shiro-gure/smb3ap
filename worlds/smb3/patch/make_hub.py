@@ -186,6 +186,8 @@ MOVE_GATE_HOOK = """
 ; uncleared panels -> the original "must complete" block. See make_hub.py.
 ; ============================================================================
 MoveGate:
+\tLDA $054B\t\t; PR 7: Map_UnlockActive — level_access on? EVERY level is walk-through
+\tBNE MoveGate_Free\t; (you can always traverse; entry is gated separately by EntryGate)
 \tLDA <World_Map_Tile
 \tCMP #$16\t\t; cleared-level checkmark tile?
 \tBEQ MoveGate_Free\t; yes -> walk through (treat as completed)

@@ -37,7 +37,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-15-level-access"
+CLIENT_REV = "2026-08-15-access-walkthrough"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -317,6 +317,17 @@ _UNLOCKABLE_BY_WORLD: "dict[int, list[tuple[int, int]]]" = {}
 for (_w, _off, _bit, _base) in gated_panels():
     _UNLOCKABLE_BY_WORLD.setdefault(_w, []).append((_off, _bit))
 
+# (world, offset, bit) -> a short display name for logs / the /smb3_unlocked command.
+# "World 1 Level 1-1" / "World 1 Toad House 2" / "World 3 Fortress 1" (drops " - Cleared").
+_PANEL_DISPLAY_NAME: "dict[tuple[int, int, int], str]" = {}
+# (world, offset, bit) -> the panel's clear-CHECK location id (to mark cleared ones).
+_PANEL_CHECK_LOCID: "dict[tuple[int, int, int], int]" = {}
+for (_w, _off, _bit, _base) in gated_panels():
+    _PANEL_DISPLAY_NAME[(_w, _off, _bit)] = _base.replace(" - Cleared", "")
+    _lid = location_name_to_id.get(_base)
+    if _lid is not None:
+        _PANEL_CHECK_LOCID[(_w, _off, _bit)] = _lid
+
 
 def desired_lock_bytes(world: int, unlocked_panels: "AbstractSet[tuple]",
                        cur: "bytes"):
@@ -349,6 +360,45 @@ def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> No
     else:
         handler.debug = not handler.debug  # no arg = toggle
     logger.info("SMB3 debug logging %s.", "ON" if handler.debug else "OFF")
+
+
+def cmd_smb3_unlocked(self: "BizHawkClientCommandProcessor", world: str = "") -> None:
+    """List which levels you've UNLOCKED (level_access). Usage: /smb3_unlocked [world#].
+    Shows unlocked panels grouped by world; a ✓ marks ones you've already cleared."""
+    handler = getattr(self.ctx, "client_handler", None)
+    if handler is None or handler.game != SMB3Client.game:
+        logger.warning("This command can only be used when playing Super Mario Bros. 3.")
+        return
+    if not handler._level_access:
+        logger.info("SMB3: level_access is OFF for this slot — every level is enterable.")
+        return
+    unlocked = handler._unlocked_panels
+    if not unlocked:
+        logger.info("SMB3: no levels unlocked yet — find an '… Access' item to open one.")
+        return
+    checked = self.ctx.checked_locations | self.ctx.locations_checked
+    want_world = None
+    if world.strip():
+        try:
+            want_world = int(world.strip())
+        except ValueError:
+            pass
+    by_world: "dict[int, list[str]]" = {}
+    for panel in unlocked:
+        w = panel[0]
+        if want_world is not None and w != want_world:
+            continue
+        name = _PANEL_DISPLAY_NAME.get(panel, str(panel))
+        loc_id = _PANEL_CHECK_LOCID.get(panel)
+        done = loc_id is not None and loc_id in checked
+        by_world.setdefault(w, []).append(("✓ " if done else "• ") + name)
+    if not by_world:
+        logger.info("SMB3: nothing unlocked%s.",
+                    f" in World {want_world}" if want_world else "")
+        return
+    logger.info("SMB3 unlocked levels (✓ = already cleared):")
+    for w in sorted(by_world):
+        logger.info("  World %d: %s", w, ", ".join(sorted(by_world[w])))
 
 
 class SMB3Client(BizHawkClient):
@@ -385,6 +435,8 @@ class SMB3Client(BizHawkClient):
         # (idempotent), so it needs no connect reset. The client writes the current
         # world's unlocked bitfield to RAM for the entry-gate ROM hook to read.
         self._unlocked_panels: "set[tuple[int, int, int]]" = set()
+        # Panels we've already announced as unlocked, so each unlock logs exactly once.
+        self._logged_unlocks: "set[tuple[int, int, int]]" = set()
         # Whether this slot enabled level_access (from slot_data). When True the client
         # arms the ROM entry-gate (writes the ACTIVE flag) and drives the unlock bitfield.
         self._level_access = False
@@ -424,9 +476,11 @@ class SMB3Client(BizHawkClient):
         # Need slot_data to know if level_access is on (so we arm the entry-gate hook).
         ctx.want_slot_data = True
         ctx.watcher_timeout = POLL_NORMAL  # boosted dynamically during boss fights
-        # Register the /smb3_debug command (idempotent across re-validations).
+        # Register the /smb3_* commands (idempotent across re-validations).
         if "smb3_debug" not in ctx.command_processor.commands:
             ctx.command_processor.commands["smb3_debug"] = cmd_smb3_debug
+        if "smb3_unlocked" not in ctx.command_processor.commands:
+            ctx.command_processor.commands["smb3_unlocked"] = cmd_smb3_unlocked
         return True
 
     async def _send_check(self, ctx: "BizHawkClientContext", loc_id: int) -> None:
@@ -711,6 +765,11 @@ class SMB3Client(BizHawkClient):
                     for it in ctx.items_received
                     if it.item in _ACCESS_ID_TO_PANEL
                 }
+                # Announce each newly-unlocked panel once (so you know what opened up).
+                for panel in sorted(self._unlocked_panels - self._logged_unlocks):
+                    logger.info("SMB3: UNLOCKED %s — you can now enter it.",
+                                _PANEL_DISPLAY_NAME.get(panel, str(panel)))
+                self._logged_unlocks |= self._unlocked_panels
                 world = world_num[0] + 1
                 want = desired_lock_bytes(world, self._unlocked_panels, unlock_bits)
                 writes = []
