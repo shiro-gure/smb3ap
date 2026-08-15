@@ -118,11 +118,13 @@ MAP_BRO_IDS = frozenset({0x03, 0x04, 0x05, 0x06, 0x07})  # Hammer/Boomerang/Heav
 
 # --- Level Access (the level_access option) — client-written "unlocked" bitfield -----
 # When level_access is on, the hub ROM's entry-gate hook (at the A-press enter choke point
-# PRG010_CEA7) refuses to ENTER a panel unless its bit is set in a per-panel "unlocked"
-# bitfield. The client owns that state: it tracks which "… Access" items it has received
-# and, on each world's map, writes that world's unlocked bits — indexed EXACTLY like
-# Map_Completions: byte_offset = (World_Map_XHi<<4)|(World_Map_X>>4), bit = the panel's row
-# bit — to a free WRAM region. Polarity: 1 = UNLOCKED.
+# PRG010_CEA7) refuses to ENTER a panel whose bit is SET in a per-panel LOCKED bitfield.
+# The client owns that state: it tracks which "… Access" items it has received and, on each
+# world's map, writes that world's LOCKED bits — indexed EXACTLY like Map_Completions:
+# byte_offset = (World_Map_XHi<<4)|(World_Map_X>>4), bit = the panel's row bit — to a free
+# WRAM region. Polarity: 1 = LOCKED. A bit is set ONLY for a gated panel whose Access item
+# isn't received yet; everything else (hub pipes, non-gated spade/king/pipe-maze panels,
+# unlocked panels) stays 0 = enterable, so the gate never blocks a panel we don't model.
 #
 # Home: $054B-$0586 is unused in the "$05xx World Map context" page (disasm/smb3.asm:1504;
 # no code references it — grep-confirmed). It's a context-union page (clobbered inside a
@@ -132,10 +134,10 @@ MAP_BRO_IDS = frozenset({0x03, 0x04, 0x05, 0x06, 0x07})  # Hammer/Boomerang/Heav
 # Default-OPEN safety: the ROM hook can't know if level_access is on, so a 1-byte ACTIVE
 # flag gates it. The hook only enforces when the flag is nonzero; the client sets it to 1
 # ONLY when level_access is enabled (and never on a level_access-off game), so entry is
-# never wrongly blocked. Highest offset a real gated panel uses is 0x28 (World 8), so a
-# 0x38-byte window covers every panel with margin.
+# never wrongly blocked. And since all-zero = all-open, a fresh/garbage region is safe.
+# Highest offset a real gated panel uses is 0x28 (World 8), so 0x30 bytes covers it.
 MAP_UNLOCK_FLAG = 0x054B       # 1 = entry-gate active (client-set when level_access on)
-MAP_UNLOCK_BITS = 0x0550       # unlocked bitfield, indexed like Map_Completions (1=unlocked)
+MAP_UNLOCK_BITS = 0x0550       # LOCKED bitfield, indexed like Map_Completions (1=locked)
 MAP_UNLOCK_BITS_LEN = 0x30     # 48 bytes ($0550-$057F); covers offsets 0..0x2F (max real 0x28)
 
 DOMAIN = "System Bus"
@@ -316,19 +318,20 @@ for (_w, _off, _bit, _base) in gated_panels():
     _UNLOCKABLE_BY_WORLD.setdefault(_w, []).append((_off, _bit))
 
 
-def desired_unlock_bytes(world: int, unlocked_panels: "AbstractSet[tuple]",
-                         cur: "bytes"):
-    """Return a 64-byte "unlocked" image for `world` (polarity 1 = UNLOCKED), with the bit
-    SET for every unlocked (world, offset, bit) panel in that world, or None if it already
-    matches `cur` (so the caller can skip the write).
+def desired_lock_bytes(world: int, unlocked_panels: "AbstractSet[tuple]",
+                       cur: "bytes"):
+    """Return the LOCKED bitfield image for `world` (polarity 1 = LOCKED), or None if it
+    already matches `cur`. A bit is SET only for a GATED panel in this world whose Access
+    item has NOT been received. Every other panel (non-gated spade/king/pipe-maze transit,
+    hub pipes, already-unlocked panels) stays 0 = enterable — so the gate can never block a
+    panel we don't explicitly model as gated-and-locked.
 
-    Unlike the checkmark writer, this is AUTHORITATIVE, not additive: a panel that is not
-    unlocked must read 0 (locked), so we build the target image from scratch each pass
-    (starting all-locked) and compare against `cur`. Pure — unit-tested."""
+    Authoritative: built from scratch each pass (start all-open) and compared to `cur`.
+    Pure — unit-tested."""
     out = bytearray(MAP_UNLOCK_BITS_LEN)
     for offset, bit in _UNLOCKABLE_BY_WORLD.get(world, ()):
-        if (world, offset, bit) in unlocked_panels and offset < len(out):
-            out[offset] |= bit
+        if (world, offset, bit) not in unlocked_panels and offset < len(out):
+            out[offset] |= bit  # gated but not unlocked -> LOCKED
     return out if bytes(out) != bytes(cur[:MAP_UNLOCK_BITS_LEN]) else None
 
 
@@ -709,7 +712,7 @@ class SMB3Client(BizHawkClient):
                     if it.item in _ACCESS_ID_TO_PANEL
                 }
                 world = world_num[0] + 1
-                want = desired_unlock_bytes(world, self._unlocked_panels, unlock_bits)
+                want = desired_lock_bytes(world, self._unlocked_panels, unlock_bits)
                 writes = []
                 if want is not None:
                     writes.append((MAP_UNLOCK_BITS, list(want), DOMAIN))

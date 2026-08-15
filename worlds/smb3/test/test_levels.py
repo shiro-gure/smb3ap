@@ -341,6 +341,43 @@ class TestLevelAccessIdentity(unittest.TestCase):
                              ItemClassification.progression)
 
 
+class TestLockBitfield(unittest.TestCase):
+    """The pure client helper that computes the LOCKED bitfield (1 = locked)."""
+
+    def _panel(self, world=1):
+        from ..Client import _UNLOCKABLE_BY_WORLD
+        off, bit = _UNLOCKABLE_BY_WORLD[world][0]
+        return world, off, bit
+
+    def test_gated_panel_locked_when_not_unlocked(self) -> None:
+        from ..Client import desired_lock_bytes, MAP_UNLOCK_BITS_LEN
+        w, off, bit = self._panel()
+        out = desired_lock_bytes(w, set(), bytes(MAP_UNLOCK_BITS_LEN))
+        self.assertIsNotNone(out)
+        self.assertTrue(out[off] & bit, "an un-unlocked gated panel must read LOCKED (1)")
+
+    def test_unlocked_panel_is_open(self) -> None:
+        from ..Client import desired_lock_bytes, MAP_UNLOCK_BITS_LEN
+        w, off, bit = self._panel()
+        out = desired_lock_bytes(w, {(w, off, bit)}, bytes(MAP_UNLOCK_BITS_LEN))
+        # With the only gated panel unlocked, its bit is clear -> image is all-zero ->
+        # matches the all-open cur -> None (no write needed).
+        if out is not None:
+            self.assertFalse(out[off] & bit)
+
+    def test_hub_world_has_no_locks(self) -> None:
+        # World 9 (hub) has no gated panels -> no locked bits -> never blocks a pipe.
+        from ..Client import desired_lock_bytes, MAP_UNLOCK_BITS_LEN
+        self.assertIsNone(desired_lock_bytes(9, set(), bytes(MAP_UNLOCK_BITS_LEN)))
+
+    def test_all_open_is_noop(self) -> None:
+        from ..Client import desired_lock_bytes, MAP_UNLOCK_BITS_LEN, _UNLOCKABLE_BY_WORLD
+        # Unlock every panel in world 1 -> all-open -> matches all-zero cur -> None.
+        w = 1
+        allp = {(w, o, b) for (o, b) in _UNLOCKABLE_BY_WORLD[w]}
+        self.assertIsNone(desired_lock_bytes(w, allp, bytes(MAP_UNLOCK_BITS_LEN)))
+
+
 class TestLevelAccessOn(SMB3TestBase):
     """level_access on (with its required deps hub_world + level_checks)."""
     options = {"level_access": 1, "hub_world": 1, "level_checks": 1}

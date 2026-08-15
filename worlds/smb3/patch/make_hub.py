@@ -270,34 +270,39 @@ SelectWarpCheck_Pass:
 \tJMP MapRepaintCheck\t; PR-5c repaint tick (bank 30, mapped at $8000 during the loop)
 """
 
-# PR 7 — level-access ENTRY gate. Blocks ENTERING a panel unless its bit is set in the
-# client-written "unlocked" bitfield ($0550, indexed like Map_Completions; 1 = unlocked).
-# Walking onto/across a locked panel is unaffected (that's the movement path / MoveGate).
-# Hub-only (in make_hub.py), so it only exists in basepatch_hub.bsdiff4.
+# PR 7 — level-access ENTRY gate. Blocks ENTERING a panel that is LOCKED per the client-
+# written bitfield ($0550, indexed like Map_Completions; 1 = LOCKED). Walking onto/across
+# a locked panel is unaffected (movement is a separate path / MoveGate). Hub-only.
+#
+# Polarity is "1 = LOCKED" (default region all-zero = all OPEN). The client sets a bit ONLY
+# for a GATED panel whose Access item hasn't been received yet. Every other panel — hub
+# pipes, spade/minigame/king/pipe-maze transit panels that AREN'T gated, and already-
+# unlocked panels — has its bit clear, so it stays enterable. This is why the gate must NOT
+# be "unlocked-set" polarity: only the specific gated-and-locked panels have bits, so we
+# never accidentally block a non-gated enterable panel we don't model.
 #
 # Hijack the enter choke point PRG010_CEA7 (prg010.asm:2751-2752, `LDA #$10 / STA
 # Map_Operation`, 5 bytes) with `JMP EntryGate` + NOP NOP. EntryGate (bank-10 tail, same
-# bank as the choke point) does:
+# bank as the choke point):
 #   - If the ACTIVE flag ($054B) is 0 -> gate inert: run the stolen two instructions and
-#     JMP PRG010_CEAC (the natural continuation). Guarantees default-OPEN when the client
-#     isn't driving (level_access off / unpatched-intent), so entry is never wrongly blocked.
+#     JMP PRG010_CEAC. Default-OPEN when the client isn't driving (level_access off).
 #   - Else compute the panel's (column offset, row bit) exactly like Map_MarkLevelComplete
-#     (prg011.asm:4586-4622) — MINUS the Luigi +$40 (the client indexes the Mario half) —
-#     using inline copies of Map_CompleteY / Map_CompleteBit (bank 11's are unreachable
-#     here). Read the unlocked bitfield at [offset]; AND the row bit:
-#       nonzero (unlocked) -> run the stolen instructions, JMP PRG010_CEAC (enter);
-#       zero (locked)      -> JMP PRG010_CEE1 (no-entry path; player stays on the map).
+#     (prg011.asm:4586-4622) MINUS the Luigi +$40 (client indexes the Mario half), using
+#     inline copies of Map_CompleteY / Map_CompleteBit (bank 11's are unreachable here).
+#     Test the LOCKED bit at bitfield[offset]:
+#       set (locked)   -> JMP PRG010_CEE1 (no-entry path; player stays on the map);
+#       clear (open)    -> run the stolen instructions, JMP PRG010_CEAC (enter).
 # X is NOT Player_Current at the choke point, so we LDX Player_Current ourselves.
 # Temp_Var1/Temp_Var13 are the same zero-page scratch the vanilla routine uses (free here).
 ENTRY_GATE_HOOK = """
 ; ============================================================================
 ; HUB 7: level-access ENTRY gate. Reached from the hijacked enter choke point
-; (PRG010_CEA7). Blocks entering a locked panel per the client's unlocked bitfield
-; at Map_UnlockBits ($0550); inert unless Map_UnlockActive ($054B) is set. Lives in
-; bank 10's blank tail (same bank as the choke point). See make_hub.py.
+; (PRG010_CEA7). Blocks entering a LOCKED panel per the client's bitfield at
+; Map_LockBits ($0550, 1 = locked); inert unless Map_UnlockActive ($054B) is set.
+; Lives in bank 10's blank tail (same bank as the choke point). See make_hub.py.
 ; ============================================================================
 Map_UnlockActive\t= $054B\t; 1 = entry gate active (client-set when level_access on)
-Map_UnlockBits\t= $0550\t; unlocked bitfield, indexed like Map_Completions (1 = unlocked)
+Map_LockBits\t= $0550\t; LOCKED bitfield, indexed like Map_Completions (1 = locked)
 
 EntryGate_CompleteY:
 \t.byte $20, $30, $40, $50, $60, $70, $80
@@ -333,11 +338,11 @@ EntryGate_RowFound:
 \tLSR A
 \tORA <Temp_Var1\t; column offset (0-63) -> A
 \tTAY\t\t; -> Y (bitfield byte index)
-\t; --- test unlocked bit ---
+\t; --- test LOCKED bit ---
 \tLDX <Temp_Var13\t; X = row index
-\tLDA Map_UnlockBits,Y
+\tLDA Map_LockBits,Y
 \tAND EntryGate_CompleteBit,X
-\tBEQ EntryGate_Blocked\t; bit clear -> locked -> refuse entry
+\tBNE EntryGate_Blocked\t; bit SET -> locked -> refuse entry
 EntryGate_Enter:
 \tLDA #$10\t\t; (stolen from PRG010_CEA7) begin "enter level" effect
 \tSTA Map_Operation
