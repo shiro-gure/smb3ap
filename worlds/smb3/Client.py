@@ -27,7 +27,7 @@ from worlds._bizhawk.client import BizHawkClient
 
 from .Locations import airship_location_id, fortress_location_ids, location_name_to_id
 from .Locations import level_location_name
-from .panels import PANELS
+from .panels import PANELS, FORTRESS_PANEL_BITS
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext, BizHawkClientCommandProcessor
@@ -36,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-09-hub-repaint"
+CLIENT_REV = "2026-08-15-fort-redraw-reenter"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -190,34 +190,48 @@ def panel_cleared(prev: "Optional[bytes]", cur: "bytes"):
 # then draws them; with the PR 5c ROM patch a level bit paints the enterable "$16"
 # checkmark tile, so re-entry/walk-through still work.
 #
-# Reverse index: world -> [(byte_offset, bit_mask, location_id)] for LEVEL panels
-# only (toad houses/fortresses have their own semantics and aren't force-drawn here).
-_LEVEL_PANEL_BITS: "dict[int, list[tuple[int, int, int]]]" = {}
+# Reverse index: world -> [(byte_offset, bit_mask, location_id)] for panels that carry
+# a stable per-location bit and must be REDRAWN after a repaint wipes Map_Completions —
+# i.e. LEVELS and TOAD HOUSES (both keyed by a fixed (world,offset,bit) in PANELS with a
+# location id). Fortresses are handled separately below (count-based, no per-location bit).
+_DRAWABLE_PANEL_BITS: "dict[int, list[tuple[int, int, int]]]" = {}
 for (_w, _off, _bit), (_kind, _pname) in PANELS.items():
-    if _kind != "level":
+    if _kind == "level":
+        _lid = location_name_to_id.get(level_location_name(_w, _pname))
+    elif _kind == "toad_house":
+        _lid = location_name_to_id.get(_pname)
+    else:
         continue
-    _lid = location_name_to_id.get(level_location_name(_w, _pname))
     if _lid is not None:
-        _LEVEL_PANEL_BITS.setdefault(_w, []).append((_off, _bit, _lid))
+        _DRAWABLE_PANEL_BITS.setdefault(_w, []).append((_off, _bit, _lid))
 
 
 def desired_completion_bytes(world: int, checked: "AbstractSet[int]",
                              cur: "bytes") -> "Optional[bytearray]":
     """Return a new 64-byte Map_Completions image for `world` with the checkmark bit
-    SET for every checked level panel in that world, starting from `cur` (so we only
-    ADD bits, never clear the game's own live state). Returns None if nothing needs to
-    change (no missing bits) — the caller then skips the write.
+    SET for every checked panel in that world (levels, toad houses, and fortresses),
+    starting from `cur` (so we only ADD bits, never clear the game's own live state).
+    Returns None if nothing needs to change (no missing bits) — caller skips the write.
 
-    Only sets bits; a bit already set in `cur` is left alone. Pure — unit-tested."""
-    panels = _LEVEL_PANEL_BITS.get(world)
-    if not panels:
-        return None
+    Levels/toad houses have a stable (offset,bit) per checked location. Fortresses are
+    count-based: we light the first N fortress panels of the world, where N = how many
+    of that world's fortress locations are checked (there is no per-location fortress
+    bit; the map only needs the right NUMBER of fort panels drawn). We never light more
+    panels than the world actually has. Only sets bits. Pure — unit-tested."""
     out = bytearray(cur)
     changed = False
-    for offset, bit, loc_id in panels:
+    for offset, bit, loc_id in _DRAWABLE_PANEL_BITS.get(world, ()):
         if loc_id in checked and offset < len(out) and not (out[offset] & bit):
             out[offset] |= bit
             changed = True
+    # Fortresses: count checked fort locations for this world, light that many panels.
+    fort_panels = FORTRESS_PANEL_BITS.get(world)
+    if fort_panels:
+        n_checked = sum(1 for lid in fortress_location_ids(world) if lid in checked)
+        for offset, bit in fort_panels[:n_checked]:
+            if offset < len(out) and not (out[offset] & bit):
+                out[offset] |= bit
+                changed = True
     return out if changed else None
 
 
@@ -450,7 +464,14 @@ class SMB3Client(BizHawkClient):
             if bulk:
                 logger.info("SMB3: bulk Map_Completions change (save-state/sync) — "
                             "re-baselining without crediting.")
-            else:
+            # Track whether a LEVEL panel flipped this pass. On a fresh level clear the
+            # game writes the vanilla (non-enterable) completion tile immediately; our
+            # enterable "$16" tile is only painted by Map_Reload_with_Completions on the
+            # NEXT map reload. So we request a repaint this pass (below) to swap the tile
+            # right away — otherwise the just-cleared level can't be re-entered until some
+            # other reload happens (BUG-B).
+            level_flip_seen = False
+            if not bulk:
                 world = world_num[0] + 1
                 known = ctx.missing_locations | ctx.checked_locations | ctx.locations_checked
                 for offset, bit in flips:
@@ -458,6 +479,8 @@ class SMB3Client(BizHawkClient):
                     if panel is None:
                         continue  # not a level/toad-house panel (e.g. a fortress)
                     kind, name = panel
+                    if kind == "level":
+                        level_flip_seen = True
                     loc_name = (level_location_name(world, name)
                                 if kind == "level" else name)
                     loc_id = location_name_to_id.get(loc_name)
@@ -470,34 +493,40 @@ class SMB3Client(BizHawkClient):
 
             # --- persist this world's checkmarks (client-driven) ---
             # Travel wipes Map_Completions (the game clears it on every world load) and
-            # the bitfield is world-agnostic, so we re-assert THIS world's cleared-level
-            # bits from the AP checked set. We only ADD bits (never clear), guard the
-            # write on the value we just read (so a concurrent game write aborts it
-            # harmlessly), and re-baseline _prev_completions to the written image so the
-            # bits we set aren't mis-detected as a fresh 0->1 clear next pass. Painting
-            # happens on the next map reload (enter a level and return); AP progress is
-            # correct regardless. Bulk passes are skipped (we don't fight a save-state
-            # swap). No-op when the world has no checked level panels.
+            # the bitfield is world-agnostic, so we re-assert THIS world's cleared panel
+            # bits (levels, toad houses, fortresses) from the AP checked set. We only ADD
+            # bits (never clear), guard the write on the value we just read (so a
+            # concurrent game write aborts it harmlessly), and re-baseline
+            # _prev_completions to the written image so the bits we set aren't
+            # mis-detected as a fresh 0->1 clear next pass. Bulk passes are skipped (we
+            # don't fight a save-state swap).
+            #
+            # We also request a repaint (MAP_REPAINT_REQ) when EITHER we added bits OR a
+            # level just flipped this pass (BUG-B): a fresh level clear already has its
+            # bit set, so desired_completion_bytes adds nothing, yet we still need the
+            # repaint to swap the vanilla completion tile to our enterable "$16" so the
+            # level is re-enterable immediately (not only after the next reload).
             if not bulk:
                 world = world_num[0] + 1
                 checked = ctx.checked_locations | ctx.locations_checked
                 desired = desired_completion_bytes(world, checked, completions)
-                if desired is not None:
-                    # Write the bits AND request a map repaint (Part-3 ROM hook makes the
-                    # checkmarks visible without a level dip). Both writes are guarded on
-                    # the completions value we read; if the game changed it meanwhile, the
-                    # write aborts harmlessly and we retry next pass.
+                if desired is not None or level_flip_seen:
+                    # Write the bits (if any) AND request a map repaint (Part-3 ROM hook
+                    # makes the checkmarks visible + swaps the enterable tile). The write
+                    # is guarded on the completions value we read; if the game changed it
+                    # meanwhile, the write aborts harmlessly and we retry next pass.
+                    to_write = desired if desired is not None else bytearray(completions)
                     ok = await guarded_write(
                         ctx.bizhawk_ctx,
-                        [(MAP_COMPLETIONS, list(desired), DOMAIN),
+                        [(MAP_COMPLETIONS, list(to_write), DOMAIN),
                          (MAP_REPAINT_REQ, [0x01], DOMAIN)],
                         [(MAP_COMPLETIONS, list(completions), DOMAIN)],  # guard: unchanged
                     )
                     if ok:
-                        self._prev_completions = bytes(desired)
+                        self._prev_completions = bytes(to_write)
                         if self.debug:
                             added = sum(bin(d & ~c).count("1")
-                                        for d, c in zip(desired, completions))
+                                        for d, c in zip(to_write, completions))
                             logger.info("SMB3: re-asserted %d checkmark bit(s) for "
                                         "World %d (repaint requested)", added, world)
 

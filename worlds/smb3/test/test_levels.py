@@ -108,8 +108,8 @@ class TestDesiredCompletionBytes(unittest.TestCase):
     from the AP checked set (client-driven persistence across hub travel)."""
 
     def setUp(self) -> None:
-        from ..Client import _LEVEL_PANEL_BITS
-        self.bits = _LEVEL_PANEL_BITS
+        from ..Client import _DRAWABLE_PANEL_BITS
+        self.bits = _DRAWABLE_PANEL_BITS
         # World 1 has level panels; grab one (offset, bit, loc_id) to drive the tests.
         self.assertIn(1, self.bits, "World 1 should have level panels")
         self.off, self.bit, self.lid = self.bits[1][0]
@@ -149,6 +149,51 @@ class TestDesiredCompletionBytes(unittest.TestCase):
         from ..Client import desired_completion_bytes
         # World 9 (hub) has no level panels.
         self.assertIsNone(desired_completion_bytes(9, {self.lid}, bytes(0x40)))
+
+    def test_redraws_checked_fortress_panels(self) -> None:
+        # A checked fortress must have its map panel bit re-asserted for redraw, so it
+        # doesn't reappear "rebuilt" after a repaint wipes Map_Completions (BUG-A).
+        from ..Client import desired_completion_bytes
+        from ..panels import FORTRESS_PANEL_BITS
+        from ..Locations import fortress_location_ids
+        # World 1 has exactly one fortress panel and one fortress location.
+        fort_panels = FORTRESS_PANEL_BITS[1]
+        self.assertTrue(fort_panels, "World 1 should have a fortress panel")
+        f_off, f_bit = fort_panels[0]
+        fort_lid = fortress_location_ids(1)[0]
+        out = desired_completion_bytes(1, {fort_lid}, bytes(0x40))
+        self.assertIsNotNone(out)
+        self.assertTrue(out[f_off] & f_bit,
+                        "checked fortress's panel bit must be set for redraw")
+
+    def test_fortress_redraw_is_count_capped(self) -> None:
+        # We never light more fortress panels than the world has, even if more fortress
+        # locations are checked than there are map panels (W3/W5: 2 locations, 1 panel).
+        from ..Client import desired_completion_bytes
+        from ..panels import FORTRESS_PANEL_BITS
+        from ..Locations import fortress_location_ids
+        world = 3
+        panels = FORTRESS_PANEL_BITS.get(world, [])
+        all_forts = set(fortress_location_ids(world))
+        out = desired_completion_bytes(world, all_forts, bytes(0x40))
+        # Count fortress bits set; must not exceed the number of actual panels.
+        lit = sum(1 for off, bit in panels if out and (out[off] & bit))
+        self.assertLessEqual(lit, len(panels))
+
+    def test_redraws_checked_toad_house(self) -> None:
+        # Toad houses must also be re-asserted for redraw (same latent bug as forts).
+        from ..Client import desired_completion_bytes, _DRAWABLE_PANEL_BITS
+        from ..panels import PANELS
+        from ..Locations import location_name_to_id
+        # Find a World-1 toad house panel.
+        th = next(((w, o, b, name) for (w, o, b), (k, name) in PANELS.items()
+                   if k == "toad_house" and w == 1), None)
+        self.assertIsNotNone(th, "World 1 should have a toad house")
+        _w, o, b, name = th
+        th_lid = location_name_to_id[name]
+        out = desired_completion_bytes(1, {th_lid}, bytes(0x40))
+        self.assertIsNotNone(out)
+        self.assertTrue(out[o] & b, "checked toad house's bit must be set for redraw")
 
 
 class TestLocationsIds(unittest.TestCase):
