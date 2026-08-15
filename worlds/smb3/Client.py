@@ -1,11 +1,15 @@
-"""BizHawk client for Super Mario Bros. 3 (client-only POC, no ROM patch).
+"""BizHawk client for Super Mario Bros. 3.
 
-The client attaches to a *vanilla* SMB3 US (PRG1) ROM — `Super Mario Bros. 3 (U)
-(PRG1) [!]` (No-Intro Rev A) — running in BizHawk via the generic connector, reads
-RAM to detect progress, and writes received items straight into RAM. There is no
-base patch — see worlds/smb3/README.md and the project DESIGN.md for the (deferred)
-ASM track. This is the exact revision the captainsouthbird disassembly reassembles
-to, so the disassembly is authoritative for these addresses.
+The client attaches to an SMB3 US (PRG1) ROM — `Super Mario Bros. 3 (U) (PRG1) [!]`
+(No-Intro Rev A) — running in BizHawk via the generic connector, reads RAM to detect
+progress, and writes received items straight into RAM. This is the exact revision the
+captainsouthbird disassembly reassembles to, so the disassembly is authoritative for
+these addresses.
+
+The world can now emit an `.apsmb3` patch (base patch = the on-map checkmark; ROM.py
++ generate_output), which the launcher/client applies before booting BizHawk. The
+client accepts both an unpatched vanilla ROM and an .apsmb3-patched one — detection is
+identical either way (the checkmark is a CHR-only change).
 
 The ROM is identified by an internal signature (below), so the client also tolerates
 PRG0, but PRG1 is the supported/disassembly-matching revision.
@@ -21,7 +25,9 @@ from NetUtils import ClientStatus
 
 from worlds._bizhawk.client import BizHawkClient
 
-from .Locations import airship_location_id, fortress_location_ids
+from .Locations import airship_location_id, fortress_location_ids, location_name_to_id
+from .Locations import level_location_name
+from .panels import PANELS, FORTRESS_PANEL_BITS
 
 if TYPE_CHECKING:
     from worlds._bizhawk.context import BizHawkClientContext, BizHawkClientCommandProcessor
@@ -30,7 +36,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-06-20-newcheck-log"
+CLIENT_REV = "2026-08-15-bro-persist"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -68,8 +74,46 @@ PLAYER_LIVES = 0x0736          # Mario lives (grant "Extra Life")
 # excluded by the tile gate; disasm/PRG/prg010.asm:1550-1567.)
 MAP_COMPLETIONS = 0x7D00       # $7D00-$7D3F Mario completed-panel bitfield
 MAP_COMPLETIONS_LEN = 0x40
+# Map_RepaintReq: a free RAM byte the hub ROM patch (make_hub.py Part 3) polls on the
+# idle world-map loop — when nonzero it re-runs the map-load tail to repaint checkmarks
+# (keeping our Map_Completions bits) so client-written checkmarks appear right after
+# travel, without the player entering a level. LevLoad_Unused1 ($0701), unused in
+# vanilla. Harmless on an unpatched ROM (nothing reads it).
+MAP_REPAINT_REQ = 0x0701
 WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
+# Player overworld position (per-player arrays; player 0 = Mario). Logged in the
+# debug heartbeat to read exact hub coordinates while standing on a pipe.
+WORLD_MAP_X = 0x0079           # map X (col = X>>4)
+WORLD_MAP_Y = 0x0075           # map Y (row = (Y-$10)>>4)
+WORLD_MAP_XHI = 0x0077         # map screen (high X)
 FORT_RUBBLE_TILES = (0x60, 0xE3)  # TILE_FORTRUBBLE / TILE_ALTRUBBLE => fortress
+
+# A completed panel's identity is (world, byte_offset, bit_mask), where byte_offset
+# is exactly the Map_Completions BYTE INDEX the game writes — Map_MarkLevelComplete
+# stores at Map_Completions[(XHi<<4)|(X>>4)] (disasm/PRG/prg011.asm:4602-4630) — so
+# the index of a flipped byte already IS the panel offset; we don't need to read the
+# player's map position. A save-state reload swaps the whole bitfield at once; if
+# more than this many bits flip 0->1 in one pass, treat it as a bulk load and
+# re-baseline instead of crediting (BUG-001 guard).
+SAVE_STATE_FLIP_THRESHOLD = 3  # >this many 0->1 flips in one pass = a bulk load
+
+# --- Roaming map-enemy (Hammer/Boomerang/Heavy/Fire Bro, W7 plant) persistence -----
+# These wandering overworld enemies are NOT tracked by Map_Completions and have no
+# defeat bitfield. Defeating one just blanks its slot in Map_Objects_IDs ($7F15-$7F22)
+# to MAPOBJ_EMPTY ($00) in SRAM (disasm/PRG/prg011.asm:2037-2038). That state survives
+# a normal level-return reload, but the one-time "enter world" path re-runs Map_Init,
+# which repopulates Map_Objects_IDs fresh from the world's ROM object list
+# (disasm/PRG/prg011.asm:141-158) — reviving every defeated bro. The hub forces that
+# path on every arrival (HubReturn / pipe-entry both JMP PRG030_84A0), so the client
+# must remember which object SLOTS were defeated per world and re-blank them on arrival.
+#
+# Each bro occupies its own slot index (0-13, same index across the parallel object
+# arrays); a world can hold up to 3 (World 4/5/6). Slot 0 = HELP hand, slot 1 = Airship
+# — neither is a defeatable bro, so we only ever record/blank BRO-valued slots.
+MAP_OBJECT_IDS = 0x7F15        # $7F15-$7F22 live map-object IDs (0 = empty/defeated)
+MAP_OBJECT_IDS_LEN = 14
+# The roaming, defeat-and-gone map enemies (disasm/smb3.asm:2814-2818).
+MAP_BRO_IDS = frozenset({0x03, 0x04, 0x05, 0x06, 0x07})  # Hammer/Boomerang/Heavy/Fire/W7Plant
 
 DOMAIN = "System Bus"
 
@@ -128,6 +172,114 @@ def fortress_cleared(prev: "Optional[bytes]", cur: "bytes",
     return False
 
 
+def panel_cleared(prev: "Optional[bytes]", cur: "bytes"):
+    """Return the list of (byte_offset, bit_mask) panels whose Map_Completions bit
+    just went 0->1 this pass — the identity Map_MarkLevelComplete uses. Used for
+    per-level / toad-house detection (the Level Checks option).
+
+    Returns (flips, bulk): `flips` is the list of newly-set (offset, bit); `bulk` is
+    True when an implausibly large number of bits flipped at once, i.e. a save-state
+    reload / bulk RAM swap (BUG-001 guard) — the caller should re-baseline WITHOUT
+    crediting. `prev` None (first pass) yields ([], False): a baseline, never a clear.
+    Pure — unit-tested."""
+    if prev is None:
+        return [], False
+    flips = []
+    for byte_offset, (p, c) in enumerate(zip(prev, cur)):
+        newly = c & ~p
+        if newly:
+            for bit in (0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01):
+                if newly & bit:
+                    flips.append((byte_offset, bit))
+    if len(flips) > SAVE_STATE_FLIP_THRESHOLD:
+        return [], True  # bulk load — re-baseline, don't credit
+    return flips, False
+
+
+# --- Client-driven checkmark persistence across hub travel --------------------
+# SMB3's Map_Completions ($7D00-$7D3F) is a single, world-AGNOSTIC 128-byte bitfield
+# (indexed only by on-screen panel position), and the game wipes it on every world
+# load. There is no free persistent ROM RAM to make it per-world, so persisting the
+# raw bitfield across travel would bleed one world's checkmarks onto another world's
+# panels. Instead the CLIENT is the persistent per-world store: it knows which level
+# locations are checked, so on each world's map it writes exactly THAT world's
+# checkmark bits into Map_Completions. The ROM's own repaint (Map_Reload_with_
+# Completions, run on the next map reload — e.g. entering a level and returning)
+# then draws them; with the PR 5c ROM patch a level bit paints the enterable "$16"
+# checkmark tile, so re-entry/walk-through still work.
+#
+# Reverse index: world -> [(byte_offset, bit_mask, location_id)] for panels that carry
+# a stable per-location bit and must be REDRAWN after a repaint wipes Map_Completions —
+# i.e. LEVELS and TOAD HOUSES (both keyed by a fixed (world,offset,bit) in PANELS with a
+# location id). Fortresses are handled separately below (count-based, no per-location bit).
+_DRAWABLE_PANEL_BITS: "dict[int, list[tuple[int, int, int]]]" = {}
+for (_w, _off, _bit), (_kind, _pname) in PANELS.items():
+    if _kind == "level":
+        _lid = location_name_to_id.get(level_location_name(_w, _pname))
+    elif _kind == "toad_house":
+        _lid = location_name_to_id.get(_pname)
+    else:
+        continue
+    if _lid is not None:
+        _DRAWABLE_PANEL_BITS.setdefault(_w, []).append((_off, _bit, _lid))
+
+
+def desired_completion_bytes(world: int, checked: "AbstractSet[int]",
+                             cur: "bytes") -> "Optional[bytearray]":
+    """Return a new 64-byte Map_Completions image for `world` with the checkmark bit
+    SET for every checked panel in that world (levels, toad houses, and fortresses),
+    starting from `cur` (so we only ADD bits, never clear the game's own live state).
+    Returns None if nothing needs to change (no missing bits) — caller skips the write.
+
+    Levels/toad houses have a stable (offset,bit) per checked location. Fortresses are
+    count-based: we light the first N fortress panels of the world, where N = how many
+    of that world's fortress locations are checked (there is no per-location fortress
+    bit; the map only needs the right NUMBER of fort panels drawn). We never light more
+    panels than the world actually has. Only sets bits. Pure — unit-tested."""
+    out = bytearray(cur)
+    changed = False
+    for offset, bit, loc_id in _DRAWABLE_PANEL_BITS.get(world, ()):
+        if loc_id in checked and offset < len(out) and not (out[offset] & bit):
+            out[offset] |= bit
+            changed = True
+    # Fortresses: count checked fort locations for this world, light that many panels.
+    fort_panels = FORTRESS_PANEL_BITS.get(world)
+    if fort_panels:
+        n_checked = sum(1 for lid in fortress_location_ids(world) if lid in checked)
+        for offset, bit in fort_panels[:n_checked]:
+            if offset < len(out) and not (out[offset] & bit):
+                out[offset] |= bit
+                changed = True
+    return out if changed else None
+
+
+def newly_defeated_bro_slots(prev: "Optional[bytes]", cur: "bytes"):
+    """Slot indices whose map-object ID went from a BRO id (alive) to $00 (defeated)
+    this pass — i.e. a roaming enemy the player just cleared. `prev` None (first pass)
+    yields [] (a baseline, never a defeat). Ignores non-bro transitions (e.g. a slot
+    naturally emptying, or a bro converting to a coin ship). Pure — unit-tested."""
+    if prev is None:
+        return []
+    out = []
+    for i in range(min(len(prev), len(cur))):
+        if prev[i] in MAP_BRO_IDS and cur[i] == 0x00:
+            out.append(i)
+    return out
+
+
+def reblank_defeated_slots(defeated: "AbstractSet[int]", cur: "bytes"):
+    """For every recorded-defeated slot that currently holds a live BRO id (i.e.
+    Map_Init just respawned it after hub travel), produce the (slot_index, new_id=$00)
+    writes needed to re-clear it. Returns [] when nothing needs re-blanking (steady
+    state), so the caller can skip the write. Only touches slots that came back as a
+    bro — never disturbs a coin ship, N-Spade, or a legitimately-alive object. Pure."""
+    writes = []
+    for slot in sorted(defeated):
+        if slot < len(cur) and cur[slot] in MAP_BRO_IDS:
+            writes.append(slot)
+    return writes
+
+
 def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> None:
     """Toggle SMB3 debug logging (per-pass heartbeat of World_Num/rescue/lives). Usage: /smb3_debug [on|off]"""
     handler = getattr(self.ctx, "client_handler", None)
@@ -147,8 +299,12 @@ def cmd_smb3_debug(self: "BizHawkClientCommandProcessor", state: str = "") -> No
 class SMB3Client(BizHawkClient):
     game = "Super Mario Bros. 3"
     system = "NES"
-    # No patch file in the POC; we identify the ROM by signature in validate_rom.
-    patch_suffix = None
+    # .apsmb3 patches (base patch = on-map checkmark, + future hooks) are applied
+    # by the launcher/client, which then boots BizHawk with the patched ROM. We
+    # still identify the ROM by the "SUPER MARIO 3" signature in validate_rom
+    # (unchanged by the CHR-only checkmark patch), so the client accepts BOTH an
+    # unpatched vanilla ROM (Any%/Vanilla) and an .apsmb3-patched ROM.
+    patch_suffix = ".apsmb3"
 
     def __init__(self) -> None:
         super().__init__()
@@ -161,6 +317,14 @@ class SMB3Client(BizHawkClient):
         # Previous Map_Completions snapshot, to detect a 0->1 panel-bit flip
         # (fortress clear). None until baselined on the first pass after connect.
         self._prev_completions: Optional[bytes] = None
+        # Roaming-enemy (Hammer/Boomerang/Heavy/Fire Bro, W7 plant) persistence:
+        # per-world set of map-object SLOT indices the player has defeated, so we can
+        # re-blank them after hub travel re-runs Map_Init and respawns them. Keyed by
+        # 1-indexed world (World_Num+1). Persists for the client session.
+        self._defeated_bro_slots: "dict[int, set[int]]" = {}
+        # (world, Map_Objects_IDs snapshot) from the previous pass, to detect a
+        # bro->empty defeat transition — only meaningful when the world is unchanged.
+        self._prev_objects_world: "tuple[Optional[int], Optional[bytes]]" = (None, None)
         # How many received items we've already applied to RAM (dedup).
         self.applied_items = 0
         # False until we've baselined applied_items against the server's
@@ -221,6 +385,10 @@ class SMB3Client(BizHawkClient):
             self._boss_active = False
             self._boss_handled = False
             self._prev_completions = None
+            # Re-baseline the map-object snapshot (so a connect mid-map doesn't read a
+            # populated table as a fresh defeat). Keep _defeated_bro_slots — it's the
+            # client-local record of cleared bros and has no server-side equivalent.
+            self._prev_objects_world = (None, None)
             ctx.watcher_timeout = POLL_NORMAL
 
     async def game_watcher(self, ctx: "BizHawkClientContext") -> None:
@@ -250,7 +418,7 @@ class SMB3Client(BizHawkClient):
 
         try:
             object_ids, wand_state, completions, world_map_tile, world_num, \
-                rescue, lives = await read(ctx.bizhawk_ctx, [
+                rescue, lives, map_x, map_y, map_xhi, map_objects = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
                     (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -258,6 +426,10 @@ class SMB3Client(BizHawkClient):
                     (WORLD_NUM, 1, DOMAIN),
                     (PLAYER_RESCUE_PRINCESS, 1, DOMAIN),
                     (PLAYER_LIVES, 1, DOMAIN),
+                    (WORLD_MAP_X, 1, DOMAIN),
+                    (WORLD_MAP_Y, 1, DOMAIN),
+                    (WORLD_MAP_XHI, 1, DOMAIN),
+                    (MAP_OBJECT_IDS, MAP_OBJECT_IDS_LEN, DOMAIN),
                 ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
@@ -278,9 +450,12 @@ class SMB3Client(BizHawkClient):
             completions_set = sum(bin(b).count("1") for b in completions)
             logger.info(
                 "SMB3 heartbeat #%d: World_Num=$%02X (world %d) koopaling=%s "
-                "wand_state=$%02X map_tile=$%02X completions_set=%d rescue=$%02X lives=$%02X",
+                "wand_state=$%02X map_tile=$%02X map_X=$%02X map_Y=$%02X map_XHi=$%02X "
+                "(col %d,row %d) completions_set=%d rescue=$%02X lives=$%02X",
                 self._pass, world_num[0], world_num[0] + 1, koopaling_on_screen,
-                wand_state[0], world_map_tile[0], completions_set, rescue[0], lives[0])
+                wand_state[0], world_map_tile[0], map_x[0], map_y[0], map_xhi[0],
+                map_x[0] >> 4, (map_y[0] - 0x10) >> 4 if map_y[0] >= 0x10 else 0,
+                completions_set, rescue[0], lives[0])
 
         try:
             # --- adaptive poll-rate boost while the Koopaling is on screen ---
@@ -336,7 +511,120 @@ class SMB3Client(BizHawkClient):
                     logger.warning("SMB3: World %d fortress cleared but no unchecked "
                                    "fortress location remains (map_tile=$%02X).",
                                    world, world_map_tile[0])
+
+            # --- per-level / toad-house checks (the Level Checks option) ---
+            # Any Map_Completions bit that flipped 0->1 this pass is a cleared panel;
+            # its (world, byte_offset, bit) identifies which. We look it up in the
+            # generated PANELS table and, if it's a level/toad-house location the
+            # server knows about for this slot (i.e. the option is on), send it.
+            # Fortress panels aren't in PANELS, so they never double-fire here.
+            flips, bulk = panel_cleared(self._prev_completions, completions)
+            if bulk:
+                logger.info("SMB3: bulk Map_Completions change (save-state/sync) — "
+                            "re-baselining without crediting.")
+            # Track whether a LEVEL panel flipped this pass. On a fresh level clear the
+            # game writes the vanilla (non-enterable) completion tile immediately; our
+            # enterable "$16" tile is only painted by Map_Reload_with_Completions on the
+            # NEXT map reload. So we request a repaint this pass (below) to swap the tile
+            # right away — otherwise the just-cleared level can't be re-entered until some
+            # other reload happens (BUG-B).
+            level_flip_seen = False
+            if not bulk:
+                world = world_num[0] + 1
+                known = ctx.missing_locations | ctx.checked_locations | ctx.locations_checked
+                for offset, bit in flips:
+                    panel = PANELS.get((world, offset, bit))
+                    if panel is None:
+                        continue  # not a level/toad-house panel (e.g. a fortress)
+                    kind, name = panel
+                    if kind == "level":
+                        level_flip_seen = True
+                    loc_name = (level_location_name(world, name)
+                                if kind == "level" else name)
+                    loc_id = location_name_to_id.get(loc_name)
+                    if loc_id is not None and loc_id in known \
+                            and loc_id not in ctx.locations_checked:
+                        logger.info("SMB3: %s cleared (offset=$%02X bit=$%02X)",
+                                    loc_name, offset, bit)
+                        await self._send_check(ctx, loc_id)
             self._prev_completions = completions
+
+            # --- persist this world's checkmarks (client-driven) ---
+            # Travel wipes Map_Completions (the game clears it on every world load) and
+            # the bitfield is world-agnostic, so we re-assert THIS world's cleared panel
+            # bits (levels, toad houses, fortresses) from the AP checked set. We only ADD
+            # bits (never clear), guard the write on the value we just read (so a
+            # concurrent game write aborts it harmlessly), and re-baseline
+            # _prev_completions to the written image so the bits we set aren't
+            # mis-detected as a fresh 0->1 clear next pass. Bulk passes are skipped (we
+            # don't fight a save-state swap).
+            #
+            # We also request a repaint (MAP_REPAINT_REQ) when EITHER we added bits OR a
+            # level just flipped this pass (BUG-B): a fresh level clear already has its
+            # bit set, so desired_completion_bytes adds nothing, yet we still need the
+            # repaint to swap the vanilla completion tile to our enterable "$16" so the
+            # level is re-enterable immediately (not only after the next reload).
+            if not bulk:
+                world = world_num[0] + 1
+                checked = ctx.checked_locations | ctx.locations_checked
+                desired = desired_completion_bytes(world, checked, completions)
+                if desired is not None or level_flip_seen:
+                    # Write the bits (if any) AND request a map repaint (Part-3 ROM hook
+                    # makes the checkmarks visible + swaps the enterable tile). The write
+                    # is guarded on the completions value we read; if the game changed it
+                    # meanwhile, the write aborts harmlessly and we retry next pass.
+                    to_write = desired if desired is not None else bytearray(completions)
+                    ok = await guarded_write(
+                        ctx.bizhawk_ctx,
+                        [(MAP_COMPLETIONS, list(to_write), DOMAIN),
+                         (MAP_REPAINT_REQ, [0x01], DOMAIN)],
+                        [(MAP_COMPLETIONS, list(completions), DOMAIN)],  # guard: unchanged
+                    )
+                    if ok:
+                        self._prev_completions = bytes(to_write)
+                        if self.debug:
+                            added = sum(bin(d & ~c).count("1")
+                                        for d, c in zip(to_write, completions))
+                            logger.info("SMB3: re-asserted %d checkmark bit(s) for "
+                                        "World %d (repaint requested)", added, world)
+
+            # --- persist defeated roaming enemies (Hammer/Boomerang/Heavy/Fire Bro) ---
+            # Their "defeated" state is just their Map_Objects_IDs slot being $00, which
+            # hub travel wipes by re-running Map_Init. So (1) DETECT a bro->empty
+            # transition and remember that slot for this world; (2) after travel re-runs
+            # Map_Init and respawns the bro, RE-BLANK any slot we recorded defeated.
+            #
+            # Detection only compares against the previous pass when the world is
+            # unchanged (a world swap replaces the whole object table, so slot-vs-slot
+            # deltas would be meaningless). We store (world, objects) together for that.
+            cur_objects = bytes(map_objects)
+            world = world_num[0] + 1
+            prev_world, prev_objs = getattr(self, "_prev_objects_world", (None, None))
+            if prev_objs is not None and prev_world == world:
+                for slot in newly_defeated_bro_slots(prev_objs, cur_objects):
+                    self._defeated_bro_slots.setdefault(world, set()).add(slot)
+                    logger.info("SMB3: World %d roaming enemy defeated (slot %d) — "
+                                "will keep it cleared across travel.", world, slot)
+            # Re-blank any recorded-defeated slot the game just respawned.
+            defeated = self._defeated_bro_slots.get(world)
+            if defeated:
+                slots = reblank_defeated_slots(defeated, cur_objects)
+                if slots:
+                    ok = await guarded_write(
+                        ctx.bizhawk_ctx,
+                        [(MAP_OBJECT_IDS + s, [0x00], DOMAIN) for s in slots],
+                        [(MAP_OBJECT_IDS + s, [cur_objects[s]], DOMAIN) for s in slots],
+                    )
+                    if ok:
+                        # Reflect the write locally so we don't re-detect it as a defeat.
+                        buf = bytearray(cur_objects)
+                        for s in slots:
+                            buf[s] = 0x00
+                        cur_objects = bytes(buf)
+                        if self.debug:
+                            logger.info("SMB3: re-cleared %d respawned enemy slot(s) "
+                                        "in World %d: %s", len(slots), world, slots)
+            self._prev_objects_world = (world, cur_objects)
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:

@@ -4,6 +4,183 @@ A running log of known issues. Newest first.
 
 ---
 
+## BUG-007 — Player sprite is slightly misaligned with the map grid
+
+**Logged:** 2026-08-15
+**Area:** hub landing / map player position (`worlds/smb3/patch/make_hub.py` `HubInit`; disasm map-coord path)
+**Severity:** Low — cosmetic only; movement, pipe entry, and level entry all work.
+**Status:** Open — deferred (user wants to fix later; not blocking).
+
+### What
+On the world map the player (Mario/Luigi) sprite sits slightly off from the panel/path tile grid — the
+sprite is not pixel-aligned with the tile the player logically occupies. Not breaking: the player can
+still walk, enter pipes, and enter levels normally; it's purely a visual offset.
+
+### Where to look when we fix it
+- `HubInit` sets the hub landing coords directly: `Map_Entered_X = $60`, `Map_Entered_Y = $50`
+  (`worlds/smb3/patch/make_hub.py`). The comment there already notes the pipe graphic is drawn a row
+  higher than the standing cell — a likely source of a half-tile visual offset. Check whether the chosen
+  `$60/$50` lands the sprite centered on the tile vs. the vanilla map-coord convention.
+- Coordinate convention (authoritative): `Map_GetTile` uses `col = World_Map_X >> 4`,
+  `tile_row = (World_Map_Y - $10) >> 4` (`disasm/PRG/prg010.asm:3295-3298`). If the sprite draw uses a
+  different Y base than the tile lookup, that's the misalignment.
+- Confirm whether the offset is hub-specific (only on the World-9 landing / custom pipe) or general to
+  all worlds after travel. If hub-only, it's a `HubInit` coord fix; if general, look at the shared map
+  reload tail (`PRG030_84D7`) restoring player position.
+- Repro: note the exact world/tile where it's most visible (user first saw it on the hub) so the fix can
+  be verified against that spot.
+
+---
+
+## BUG-006 — Toad houses don't stay used after warp-whistle + revisit
+
+**Logged:** 2026-08-08
+**Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm toad-house path)
+**Severity:** Low — cosmetic/gameplay (a toad house can be re-run for another item).
+**Status:** FIXED 2026-08-15 (PR 5c) — the client re-assertion now covers toad houses, not just
+levels. `_DRAWABLE_PANEL_BITS` includes `kind == "toad_house"` and `desired_completion_bytes` re-asserts
+their `Map_Completions` bits on every map load (including the warp-whistle→hub→back path), so a used toad
+house stays marked. Caveat: this restores the bit only for toad-house locations the AP client knows are
+checked — i.e. when `level_checks` is on (toad houses become AP locations then). Verify in-game on the
+whistle path. Original hypothesis below (now the implemented fix).
+
+### What
+User reports: after using a **warp whistle** and revisiting a world, a previously-used toad house is no
+longer marked used and can be re-entered/re-run. Two things to confirm/untangle:
+1. **Whistle scope:** PR 5c dropped the planned infinite whistle; a *vanilla* warp whistle still exists
+   in-game (item $0C) and warps to World 9. Confirm the user's "warp whistle" is the vanilla item (not a
+   reintroduced hub whistle) and the exact path (whistle → hub → travel back → toad house un-used).
+2. **Root cause hypothesis:** toad-house "used" state is the same `Map_Completions` bit that travel wipes
+   (world-agnostic bitfield; see BUG-003). The client re-asserts *level* checkmarks only
+   (`_LEVEL_PANEL_BITS` filters `kind == "level"`), NOT toad houses — so a used toad house's bit is not
+   restored after travel, and its panel reverts to enterable/unused. If we want toad houses to "stay
+   used" across travel, the client must also re-assert toad-house bits (but toad houses are NOT AP
+   locations unless level_checks is on, and "used" is a play-state we may not be tracking server-side).
+   Decide: persist toad-house used-state (needs a client-side record of which were used) vs accept reset.
+
+---
+
+## BUG-005 — Cleared fortresses reset their (rubble/cleared) state after travel
+
+**Logged:** 2026-08-08
+**Area:** hub travel / completion persistence (`worlds/smb3/Client.py`; disasm fortress repaint)
+**Severity:** Low-Med — cosmetic on the map; AP fortress checks are safe (server-side).
+**Status:** FIXED 2026-08-15 (PR 5c). `gen_panels.py` now emits `FORTRESS_PANEL_BITS` (world → ordered
+[(offset,bit)]); `desired_completion_bytes` re-asserts fortress bits by count — it lights the first N
+fortress panels of a world where N = how many of that world's fortress locations are checked (count-based
+to match `FORTRESS_COUNTS`; never more panels than exist, covering the W3/W5 "2 locations, 1 panel" case
+from BUG-002). The reload repaints the rubble/cleared tile from the restored bit — no `$16` enterable
+treatment needed (forts stay non-enterable rubble, which is correct). Fix direction below is what shipped.
+
+### What
+After completing a fortress and traveling away/back, the fortress panel reverts to its pre-clear
+(uncleared) look instead of staying as the cleared/rubble tile — same root cause as BUG-003 (the
+world-agnostic `Map_Completions` bitfield is wiped on every world load). The PR 5c client re-assertion
+(`desired_completion_bytes`) restores only **level** checkmark bits (`_LEVEL_PANEL_BITS`, `kind ==
+"level"`), so fortress bits are not restored and the fortress panel resets.
+
+### Fix direction
+Extend the client re-assertion to also set fortress panels' `Map_Completions` bits for the current
+world from the AP checked set. Caveats: (a) fortresses are NOT in the `PANELS` table (excluded by design
+— see BUG-002); their (offset,bit) coords would need to come from a fortress panel table (the parser saw
+them, gen_panels.py:153-161, but drops them). (b) The fortress repaint tile is the rubble/removable tile
+(`Map_Removable_Tiles`/`Map_RemoveTo_Tiles`, prg012.asm:135-143), NOT the M/L checkmark — setting the
+bit should make `Map_Reload_with_Completions` repaint the rubble correctly (verify it doesn't need the
+enterable-$16 treatment; forts are meant to become non-enterable rubble, which is fine). User request:
+"forts after completion should be similar to checkmark tiles" — i.e. persist like levels do.
+
+---
+
+## BUG-004 — World 8 vehicle / pyramid panels are not AP checks and are non-re-enterable (follow-up)
+
+**Logged:** 2026-08-08
+**Area:** panel classification (`worlds/smb3/patch/gen_panels.py` `_EXCLUDE`) + re-entry (shared with PR 5c)
+**Severity:** Low — by-design today; logged as a scope decision, not a regression.
+**Status:** Open — deferred follow-up (raised while validating PR 5c in-game).
+
+### What
+World 8's map is mostly **non-numbered-level panels**: tanks (`W8T1L`/`W8T2L`), the battleship
+(`W8BSL`), the airship (`W8AirshipL`), hand-traps / "pyramids" (`W8H1L`-`W8H3L`), and Bowser's castle
+(`W8BCL`). Only **8-1 (`W801L`) and 8-2 (`W802L`)** are treated as normal levels; those two DO fire as
+AP checks and were verified in-game. The vehicle/pyramid panels are (a) intentionally excluded from AP
+locations by `gen_panels.py` `_EXCLUDE`, and (b) non-re-enterable after clear (same completion-tile
+coupling as levels — see PR 5c).
+
+### Scope to decide (not a straight bugfix)
+1. Should any of the vehicle/pyramid panels become **AP location checks**? (Airships already have their
+   own detection path; tanks/battleship/hand-traps currently have none.)
+2. Should they be **re-enterable** after clear? If yes, they can reuse the PR 5c level-repaint
+   decoupling — BUT the level path is discriminated from toad houses at `prg012.asm:355` (quadrant
+   range) vs `:343` (`Map_Completable_Tiles`); World-8 vehicles route via their own structure-table
+   types, so confirm which repaint branch they hit before extending.
+3. **Bowser's Castle (`W8BCL`) is the victory goal** — it must NOT become a repeatable check or a
+   re-enterable "cleared" panel. Exclude it explicitly from any of the above.
+
+---
+
+## BUG-003 — Hub World: warp clears the on-map completion bitfield (checkmarks reset)
+
+**Logged:** 2026-08-08
+**Area:** World-9 hub (`worlds/smb3/patch/make_hub.py`; disasm map-init path)
+**Severity:** Low — cosmetic in-game only; **AP checks are NOT affected** (server-side; client re-syncs).
+**Status:** FIXED in PR 5c — but **client-driven**, not a ROM gate. First attempt gated the ROM clear
+loop (`Hub_Persist`); that BLED one world's checkmarks onto another world's panels, because
+`Map_Completions` ($7D00-$7D7F) is a single **world-agnostic** 128-byte bitfield and there is **no free
+persistent ROM RAM** to segment it per world (the only large WRAM block is the level-decompression
+buffer `Tile_Mem`). So the ROM gate was reverted; the vanilla wipe-on-load is intact. Instead the AP
+**client** is the persistent per-world store: on each world's map it re-asserts THAT world's cleared-level
+checkmark bits from the AP checked set (`Client.py` `desired_completion_bytes` + a guarded write). The
+ROM keeps the PR 5c level-repaint so a re-asserted bit paints the enterable `$16` checkmark tile
+(re-enterable + walk-through). Visual note: repaint runs on the next map reload (enter a level and
+return), so right after travel the board refreshes on the first level dip. Original deferred note below.
+
+### What
+The World-9 warp path (and the planned return-to-hub) route through `PRG030_84A0`, whose clear loop
+(`disasm/PRG/prg030.asm:560-566`) **zeroes the entire `Map_Completions` bitfield** ($7D00-$7D7F — the
+only copy; SMB3 has no SRAM). So travelling hub→World→hub→World **resets the in-game cleared-panel
+checkmarks** each trip. Because the AP server records checks as they fire (and the client re-sends on
+reconnect), **multiworld progress is safe** — only the cosmetic on-map state resets.
+
+### Fix directions (when we do true persistence)
+- Snapshot `$7D00-$7D7F` to free RAM before the clear and restore after the reload; or
+- Branch warps to a non-clearing re-init entry (`~PRG030_84D7`, right after the clear loop) and clear
+  only on a genuine new game.
+
+---
+
+## BUG-002 — `FORTRESS_COUNTS` (W3, W5) may not match distinct overworld fortress panels
+
+**Logged:** 2026-07-27
+**Area:** fortress locations (`worlds/smb3/Locations.py` — `FORTRESS_COUNTS`)
+**Severity:** Low — shipped fortress detection works in-game; this is a data-model question.
+**Status:** Open — surfaced by the PR 4 panel parser (`worlds/smb3/patch/gen_panels.py`);
+deliberately NOT changed in PR 4 (would churn wire-format location ids).
+
+### What
+`FORTRESS_COUNTS = {1:1,2:1,3:2,4:2,5:2,6:3,7:2,8:1}` (total 14). The disasm structure-table
+parser finds only **12 distinct fortress *overworld panels*** — Worlds 3 and 5 each expose **one**
+fortress map panel (`W3F1L` at offset $08/bit $08; `W5F1L` at $04/$08). The `W3F2L`/`W5F2L` symbols
+that made us think "2" are **alternate internal room layouts** of the same fortress (`Fortress/3-F2A.asm`
+= "Alternate level layout"), not a second map panel. Worlds 4 and 6 genuinely have distinct extra
+fortress panels (`W4F1/2L`, `W6F1/2/3L`).
+
+### Nuance / why not fixed now
+BUG-001's in-game log shows the user saw "W3 fortress 1 + fortress 2" fire. With count-based crediting,
+a **second completion of the same W3 panel** (e.g. via the alternate exit/room) credits the world's
+second fortress location — so a 2-count may actually reflect "the same panel cleared two ways" rather
+than two panels. Whether that's the intended AP model is a **design decision**, and changing counts
+changes fortress location ids (part of the wire format). Left as-is; the PR 4 panel table therefore
+**excludes fortresses entirely** and only adds levels + toad houses.
+
+### Fix directions
+- Decide the intended model: one AP check per fortress *panel* (→ counts 1,1,1,2,1,3,2,1 = 12) vs.
+  one per *completion path* (keeps 14, needs the alt-exit to be a real distinct signal). Ties into the
+  "alternate exits as independent checks / 100% mode" idea in DESIGN.md §10.
+- If counts change, treat it as a wire-format migration (ids shift) and re-verify fortress detection
+  in-game (the same panels the user already validated).
+
+---
+
 ## BUG-001 — Save-state reload / bulk Map_Completions change false-fires fortress detection
 
 **Logged:** 2026-06-20

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from Options import Choice, PerGameCommonOptions
+from Options import Choice, OptionGroup, PerGameCommonOptions, Toggle
 
 
 class Goal(Choice):
@@ -29,7 +29,52 @@ class ItemModel(Choice):
     default = 0
 
 
+class LevelChecks(Toggle):
+    """Add a location check for every individual level and Toad House.
+
+    off (default): only the airship-boss and fortress clears (plus Bowser) are
+        location checks — the Phase 0 / Any% set.
+    on: every numbered level (1-1, 1-2, …) and every Toad House also becomes a
+        check, fired when you clear that panel. A "100%"-style set of checks. This
+        only *adds* locations; the victory condition is still whatever Goal says.
+    """
+    display_name = "Level Checks"
+
+
+class HubWorld(Toggle):
+    """Start in World 9 (the Warp Zone) as a travel hub instead of World 1.
+
+    off (default): a new game starts in World 1 and worlds are played in order
+        (vanilla progression).
+    on: a ROM hack starts you in World 9 as a hub. (Full free travel — a panel to
+        every world, and returning to the hub after beating a world — arrives in a
+        follow-up; this first step lands you cleanly in World 9.) Requires the
+        patched ROM (the .apsmb3 already carries it).
+    """
+    display_name = "Hub World (start in World 9)"
+
+
 @dataclass
 class SMB3Options(PerGameCommonOptions):
     goal: Goal
     item_model: ItemModel
+    level_checks: LevelChecks
+    hub_world: HubWorld
+
+
+# Organizes the webhost options page (and generated YAML templates) into sections.
+# Any option not listed here lands in an auto-generated "Game Options" group, and
+# the item/location options get their own prebuilt group — so we only name the
+# game-specific ones. See Archipelago Options.py OptionGroup / get_option_groups.
+smb3_option_groups = [
+    OptionGroup("Goal", [
+        Goal,
+        ItemModel,
+    ]),
+    OptionGroup("Locations", [
+        LevelChecks,
+    ]),
+    OptionGroup("World", [
+        HubWorld,
+    ]),
+]

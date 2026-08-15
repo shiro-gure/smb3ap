@@ -1,13 +1,30 @@
-from BaseClasses import Item, ItemClassification, Location, Region
+import os
+from typing import ClassVar, Optional
+
+import settings
+from BaseClasses import Item, ItemClassification, Location, Region, Tutorial
 from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
-    BASE_ID, BOWSERS_CASTLE, location_name_to_id, location_table,
+    BASE_ID, BOWSERS_CASTLE, level_check_location_names,
+    level_check_locations_for_world, location_name_to_id, location_table,
 )
-from .Options import SMB3Options
+from .Options import SMB3Options, smb3_option_groups
+from .Presets import smb3_options_presets
 from .Regions import region_table
+from .Rom import PRG1_MD5, SMB3ProcedurePatch, patch_rom
 from .Rules import set_rules
+
+
+class SMB3Settings(settings.Group):
+    class RomFile(settings.UserFilePath):
+        """File name of the SMB3 (U) (PRG1) ROM."""
+        description = "Super Mario Bros. 3 (USA) (PRG1) ROM File"
+        copy_to: Optional[str] = "Super Mario Bros. 3 (USA) (Rev 1).nes"
+        md5s = [PRG1_MD5]
+
+    rom_file: RomFile = RomFile(RomFile.copy_to)
 
 
 class SMB3Item(Item):
@@ -20,10 +37,20 @@ class SMB3Location(Location):
 
 class SMB3Web(WebWorld):
     theme = "grass"
-    # No tutorials override yet — the setup/game-info docs aren't written.
-    # (adding games.md requires a setup doc + game_info doc before upstream
-    # submission; tracked in NEXT_STEPS.md.) Leaving the default empty list here
-    # avoids a dangling reference to a non-existent setup_en.md.
+
+    setup_en = Tutorial(
+        "Multiworld Setup Guide",
+        "A guide to setting up the Super Mario Bros. 3 randomizer connected to an "
+        "Archipelago Multiworld.",
+        "English",
+        "setup_en.md",
+        "setup/en",
+        ["Shiro"],
+    )
+
+    tutorials = [setup_en]
+    option_groups = smb3_option_groups
+    options_presets = smb3_options_presets
 
 
 class SMB3World(World):
@@ -35,6 +62,7 @@ class SMB3World(World):
     game = "Super Mario Bros. 3"
     options_dataclass = SMB3Options
     options: SMB3Options
+    settings: ClassVar[SMB3Settings]
     web = SMB3Web()
     topology_present = True
 
@@ -55,10 +83,18 @@ class SMB3World(World):
         menu = Region("Menu", self.player, self.multiworld)
         self.multiworld.regions.append(menu)
 
+        level_checks_on = bool(self.options.level_checks)
         for name, data in region_table.items():
             region = Region(name, self.player, self.multiworld)
+            locs = list(data.locations)
+            # Optional per-level / toad-house checks only exist when the option is
+            # on. Their ids are always defined in location_name_to_id, but we only
+            # PLACE them here so the Any%/Vanilla pool is unchanged when it's off.
+            if level_checks_on and name.startswith("World "):
+                world_num = int(name.split()[1])
+                locs += level_check_locations_for_world(world_num)
             region.add_locations(
-                {loc: self.location_name_to_id.get(loc) for loc in data.locations},
+                {loc: self.location_name_to_id.get(loc) for loc in locs},
                 SMB3Location,
             )
             self.multiworld.regions.append(region)
@@ -72,13 +108,40 @@ class SMB3World(World):
         victory.place_locked_item(self.create_event("Victory"))
 
     def create_items(self) -> None:
-        # Model A: one filler item per real (id-bearing) location. The Victory
-        # event is a locked item placed separately, so it isn't counted here.
-        real_location_count = len(location_table)
+        # Model A: one filler item per real (id-bearing) location actually PLACED.
+        # location_table always defines the optional level/toad-house ids, so
+        # subtract them when the level_checks option is off (they aren't placed).
+        # The Victory event is a locked item placed separately, not counted here.
+        placed_count = len(location_table)
+        if not self.options.level_checks:
+            placed_count -= len(level_check_location_names())
         self.multiworld.itempool += [
             self.create_item(self.get_filler_item_name())
-            for _ in range(real_location_count)
+            for _ in range(placed_count)
         ]
+
+    def generate_output(self, output_directory: str) -> None:
+        # Emit an .apsmb3 patch (base patch = on-map checkmark; per-seed tokens
+        # added in later PRs). Skipped gracefully when no base ROM is configured
+        # (e.g. CI, or the patchless Any%/Vanilla flow) so generation still works.
+        # We LOG the skip (instead of silently producing nothing) so a missing
+        # rom_file is never a silent mystery — the patch just wouldn't appear.
+        import logging
+        logger = logging.getLogger("Super Mario Bros. 3")
+        try:
+            from .Rom import get_base_rom_path
+            get_base_rom_path()
+        except (FileNotFoundError, KeyError, ValueError) as exc:
+            logger.info(
+                "SMB3 (%s): no usable base ROM (%s). Skipping .apsmb3 patch — set "
+                "host.yaml 'smb3_options: rom_file:' to your PRG1 ROM to get the "
+                "patched (checkmark) ROM.", self.player_name, exc)
+            return
+
+        patch = SMB3ProcedurePatch(player=self.player, player_name=self.player_name)
+        patch_rom(self, patch)
+        out_base = self.multiworld.get_out_file_name_base(self.player)
+        patch.write(os.path.join(output_directory, f"{out_base}{patch.patch_file_ending}"))
 
     set_rules = set_rules
 
