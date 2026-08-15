@@ -3,11 +3,12 @@ from typing import ClassVar, Optional
 
 import settings
 from BaseClasses import Item, ItemClassification, Location, Region, Tutorial
+from Options import OptionError
 from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
-    BASE_ID, BOWSERS_CASTLE, level_check_location_names,
+    BASE_ID, BOWSERS_CASTLE, access_item_names, level_check_location_names,
     level_check_locations_for_world, location_name_to_id, location_table,
 )
 from .Options import SMB3Options, smb3_option_groups
@@ -79,11 +80,33 @@ class SMB3World(World):
     def get_filler_item_name(self) -> str:
         return self.random.choice(filler_item_names)
 
+    def generate_early(self) -> None:
+        # level_access needs the entry-gate ROM hook (hub-only) AND the per-panel
+        # clear-checks (level_checks). Refuse a combo that can't actually work rather
+        # than silently mis-generating.
+        if self.options.level_access:
+            missing = []
+            if not self.options.hub_world:
+                missing.append("hub_world")
+            if not self.options.level_checks:
+                missing.append("level_checks")
+            if missing:
+                raise OptionError(
+                    f"SMB3 ({self.player_name}): 'level_access' requires "
+                    f"{' and '.join(missing)} to also be enabled "
+                    f"(the entry-gate ROM hook is hub-only, and gated panels come from "
+                    f"level_checks). Enable them, or turn off level_access."
+                )
+
     def create_regions(self) -> None:
         menu = Region("Menu", self.player, self.multiworld)
         self.multiworld.regions.append(menu)
 
         level_checks_on = bool(self.options.level_checks)
+        # With level_access, the hub makes every world reachable, so the AP region graph
+        # becomes hub-and-spoke (Menu -> each World directly) instead of the vanilla
+        # linear chain. Access to a panel's CHECK is gated on its Access item in Rules.
+        hub_and_spoke = bool(self.options.level_access)
         for name, data in region_table.items():
             region = Region(name, self.player, self.multiworld)
             locs = list(data.locations)
@@ -100,7 +123,10 @@ class SMB3World(World):
             self.multiworld.regions.append(region)
 
         for name, data in region_table.items():
-            source = menu if data.connects_from is None else self.get_region(data.connects_from)
+            if hub_and_spoke:
+                source = menu  # every world reachable from the hub
+            else:
+                source = menu if data.connects_from is None else self.get_region(data.connects_from)
             source.connect(self.get_region(name))
 
         # Victory: beating Bowser's Castle. Locked event, excluded from the pool.
@@ -108,17 +134,24 @@ class SMB3World(World):
         victory.place_locked_item(self.create_event("Victory"))
 
     def create_items(self) -> None:
-        # Model A: one filler item per real (id-bearing) location actually PLACED.
+        # Model A: one item per real (id-bearing) location actually PLACED.
         # location_table always defines the optional level/toad-house ids, so
         # subtract them when the level_checks option is off (they aren't placed).
         # The Victory event is a locked item placed separately, not counted here.
         placed_count = len(location_table)
         if not self.options.level_checks:
             placed_count -= len(level_check_location_names())
-        self.multiworld.itempool += [
-            self.create_item(self.get_filler_item_name())
-            for _ in range(placed_count)
-        ]
+
+        # With level_access on, the 89 Access items are PROGRESSION items that fill 89 of
+        # those slots (they replace filler, keeping total items == placed locations so the
+        # multiworld stays balanced). generate_early guarantees level_checks is on here,
+        # so all 89 gated panels' clear-checks are placed and there's room for them.
+        pool = []
+        if self.options.level_access:
+            pool += [self.create_item(name) for name in access_item_names()]
+        remaining = placed_count - len(pool)
+        pool += [self.create_item(self.get_filler_item_name()) for _ in range(remaining)]
+        self.multiworld.itempool += pool
 
     def generate_output(self, output_directory: str) -> None:
         # Emit an .apsmb3 patch (base patch = on-map checkmark; per-seed tokens

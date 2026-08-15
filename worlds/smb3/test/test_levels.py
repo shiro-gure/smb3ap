@@ -305,5 +305,94 @@ class TestLevelChecksOn(SMB3TestBase):
         self.assertEqual(len(real), 7 + sum(FORTRESS_COUNTS.values()) + 77)
 
 
+class TestLevelAccessIdentity(unittest.TestCase):
+    """The pure gated-panel / Access-item identity model (Locations.py)."""
+
+    def test_counts(self) -> None:
+        from ..Locations import gated_panels, access_item_names, access_item_codes
+        # 55 levels + 22 toad houses + 12 fortress PANELS = 89 gated panels.
+        self.assertEqual(len(gated_panels()), 89)
+        self.assertEqual(len(access_item_names()), 89)
+        self.assertEqual(len(access_item_codes), 89)
+
+    def test_access_codes_unique_and_ranged(self) -> None:
+        from ..Locations import access_item_codes, ACCESS_CODE_BASE
+        codes = list(access_item_codes.values())
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertTrue(all(c >= ACCESS_CODE_BASE for c in codes))
+
+    def test_access_name_matches_base(self) -> None:
+        from ..Locations import access_item_name
+        self.assertEqual(access_item_name("World 1 Level 1-1"),
+                         "World 1 Level 1-1 Access")
+
+    def test_every_gated_base_is_a_real_location(self) -> None:
+        from ..Locations import gated_panels, location_name_to_id
+        for _w, _o, _b, base in gated_panels():
+            self.assertIn(base, location_name_to_id,
+                          f"gated base {base!r} must be a real location")
+
+    def test_access_items_are_progression(self) -> None:
+        from BaseClasses import ItemClassification
+        from ..Items import item_table
+        from ..Locations import access_item_names
+        for name in access_item_names():
+            self.assertEqual(item_table[name].classification,
+                             ItemClassification.progression)
+
+
+class TestLevelAccessOn(SMB3TestBase):
+    """level_access on (with its required deps hub_world + level_checks)."""
+    options = {"level_access": 1, "hub_world": 1, "level_checks": 1}
+
+    def test_pool_balances(self) -> None:
+        real = [l for l in self.multiworld.get_locations(self.player)
+                if l.address is not None]
+        self.assertEqual(len(self.multiworld.itempool), len(real))
+
+    def test_all_access_items_in_pool(self) -> None:
+        from ..Locations import access_item_names
+        pool = {i.name for i in self.multiworld.itempool}
+        for name in access_item_names():
+            self.assertIn(name, pool)
+
+    def test_region_graph_is_hub_and_spoke(self) -> None:
+        # Every World region connects directly from Menu (not the linear chain).
+        menu = self.multiworld.get_region("Menu", self.player)
+        menu_targets = {e.connected_region.name for e in menu.exits}
+        for w in range(1, 9):
+            self.assertIn(f"World {w}", menu_targets)
+
+    def test_check_gated_on_access_item(self) -> None:
+        # A level's clear-check is not reachable without its Access item, and is with it.
+        from ..Locations import access_item_name
+        loc = self.multiworld.get_location("World 1 Level 1-1", self.player)
+        base = self.multiworld.state.copy()
+        self.assertFalse(loc.can_reach(base))
+        base.collect(self.world.create_item(access_item_name("World 1 Level 1-1")))
+        self.assertTrue(loc.can_reach(base))
+
+
+class TestLevelAccessValidation(SMB3TestBase):
+    """generate_early must reject level_access without its required deps."""
+    # Don't auto-run the standard WorldTestBase setup (we want to assert on setup itself).
+    auto_construct = False
+
+    def _expect_error(self, options: dict) -> None:
+        from Options import OptionError
+        self.options = options
+        with self.assertRaises(OptionError):
+            self.world_setup()
+
+    def test_requires_hub_world(self) -> None:
+        self._expect_error({"level_access": 1, "hub_world": 0, "level_checks": 1})
+
+    def test_requires_level_checks(self) -> None:
+        self._expect_error({"level_access": 1, "hub_world": 1, "level_checks": 0})
+
+    def test_requires_both(self) -> None:
+        self._expect_error({"level_access": 1, "hub_world": 0, "level_checks": 0})
+
+
 if __name__ == "__main__":
     unittest.main()

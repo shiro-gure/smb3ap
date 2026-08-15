@@ -41,6 +41,19 @@ class LevelChecks(Toggle):
     display_name = "Level Checks"
 
 
+class LevelAccess(Toggle):
+    """Gate ENTRY to each level behind a per-panel Access item (MM2/MM3 stage-select style).
+
+    off (default): every panel you can reach is enterable immediately.
+    on: you can always WALK the overworld, but you can't ENTER a level, fortress, or Toad
+        House until you receive its "… Access" item from the multiworld. Clearing a panel
+        still fires its check (from Level Checks). Requires Hub World + Level Checks — if
+        this is on without both, generation raises an error (the entry-gate ROM hook is
+        hub-only, and the gated panels come from Level Checks).
+    """
+    display_name = "Level Access (entry gating)"
+
+
 class HubWorld(Toggle):
     """Start in World 9 (the Warp Zone) as a travel hub instead of World 1.
 
@@ -59,6 +72,7 @@ class SMB3Options(PerGameCommonOptions):
     goal: Goal
     item_model: ItemModel
     level_checks: LevelChecks
+    level_access: LevelAccess
     hub_world: HubWorld
 
 
@@ -73,6 +87,7 @@ smb3_option_groups = [
     ]),
     OptionGroup("Locations", [
         LevelChecks,
+        LevelAccess,
     ]),
     OptionGroup("World", [
         HubWorld,

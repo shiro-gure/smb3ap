@@ -116,6 +116,73 @@ def level_check_locations_for_world(world: int) -> List[str]:
     return _level_checks_by_world.get(world, [])
 
 
+# --- Level Access items (the "Level Access" option; MM2/MM3 stage-select gating) ---
+# When level_access is on, EVERY enterable panel (levels + toad houses + fortress panels)
+# gets a progression ACCESS item: you can always walk the map, but can't ENTER a panel
+# until its Access item is received. Each panel keeps its clear-CHECK (from level_checks).
+#
+# The canonical gated-panel table is keyed by the SAME stable (world, offset, bit) the
+# panels use, so an Access item's identity never shifts. Fortresses aren't in PANELS
+# (count-based locations, BUG-002), so we take their PANEL positions from
+# FORTRESS_PANEL_BITS (panels.py) and name them "World N Fortress K" by their stable
+# (offset,bit) order within the world — matching fortress_location_name's K.
+from .panels import FORTRESS_PANEL_BITS  # noqa: E402
+
+ACCESS_ITEM_SUFFIX = " Access"
+# Item codes for Access items live in their own range so they never collide with the
+# location codes (airships 1-7, fortress 100-189, levels 10000+, toad 20000+). Access
+# items are ITEMS not locations, but item ids share the BASE_ID space (Items.py), so we
+# keep them well clear at 30000+. Derived from the stable (world, offset, bit) key.
+ACCESS_CODE_BASE = 30000
+
+
+def access_item_name(base_location_name: str) -> str:
+    """The Access item for a gated panel = its base location name + ' Access'
+    (e.g. 'World 1 Level 1-1' -> 'World 1 Level 1-1 Access')."""
+    return base_location_name + ACCESS_ITEM_SUFFIX
+
+
+def fortress_panel_location_name(world: int, index: int) -> str:
+    """The clear-CHECK location name for a fortress PANEL (index 1-based within the
+    world, by (offset,bit) order). Mirrors fortress_location_name so the panel and its
+    count-based clear-check line up for the first N forts of the world."""
+    return fortress_location_name(world, index)
+
+
+# Canonical gated-panel table: one row per enterable panel that gets an Access item.
+# Each row = (world, offset, bit, base_location_name). base_location_name is the panel's
+# clear-CHECK location (levels/toad houses from PANELS; fortress panels named by index).
+# Access item name = base_location_name + ' Access'. Built in a stable, sorted order.
+_gated_panels: List[tuple] = []  # (world, offset, bit, base_location_name)
+for (_w, _off, _bit), (_kind, _pname) in sorted(PANELS.items()):
+    if _kind == "level":
+        _gated_panels.append((_w, _off, _bit, level_location_name(_w, _pname)))
+    elif _kind == "toad_house":
+        _gated_panels.append((_w, _off, _bit, _pname))
+# Fortress panels: index within world by sorted (offset,bit) order.
+for _w in sorted(FORTRESS_PANEL_BITS):
+    for _idx, (_off, _bit) in enumerate(sorted(FORTRESS_PANEL_BITS[_w]), start=1):
+        _gated_panels.append((_w, _off, _bit, fortress_panel_location_name(_w, _idx)))
+
+
+def gated_panels() -> List[tuple]:
+    """All gated panels as (world, offset, bit, base_location_name), stable order.
+    Only meaningful when the level_access option is on."""
+    return list(_gated_panels)
+
+
+def access_item_names() -> List[str]:
+    """All Access item names (one per gated panel), stable order."""
+    return [access_item_name(base) for (_w, _o, _b, base) in _gated_panels]
+
+
+# Access item name -> stable code (offset from BASE_ID, applied in Items.py).
+access_item_codes: Dict[str, int] = {
+    access_item_name(base): _panel_code(ACCESS_CODE_BASE, w, off, bit)
+    for (w, off, bit, base) in _gated_panels
+}
+
+
 # --- The location table (name -> LocationData) and the id lookup ---
 location_table: Dict[str, LocationData] = {}
 for _w in AIRSHIP_WORLDS:
