@@ -3,7 +3,10 @@
 ## Required Software
 
 - [Archipelago](https://github.com/ArchipelagoMW/Archipelago/releases)
-- The SMB3 apworld (`smb3.apworld`) installed into your Archipelago `custom_worlds` folder.
+- The SMB3 apworld (`smb3.apworld`) — **download the latest `smb3.apworld` from the
+  [Releases page](https://github.com/shiro-gure/smb3ap/releases)** and drop it into your
+  Archipelago `custom_worlds` folder (Windows: `C:\ProgramData\Archipelago\custom_worlds\`),
+  then restart the launcher/client. No building required.
 - A legally obtained **Super Mario Bros. 3 (USA) (Rev 1)** ROM — the **PRG1 / Rev A** revision. No ROM is distributed.
 - [BizHawk](https://tasvideos.org/BizHawk/ReleaseHistory) 2.9 or later (2.10 recommended).
 
