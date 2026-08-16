@@ -1,0 +1,72 @@
+name: Release smb3.apworld
+
+# Build and publish the smb3.apworld to a GitHub Release whenever a version tag is
+# pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`). Also runnable on demand
+# from the Actions tab (workflow_dispatch) to produce the artifact without a release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the Release and upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build smb3.apworld
+        run: |
+          python3 worlds/smb3/patch/build_apworld.py --out dist
+          ls -l dist
+
+      - name: Sanity-check the artifact
+        run: |
+          python3 - <<'PY'
+          import zipfile, sys
+          z = zipfile.ZipFile("dist/smb3.apworld")
+          names = z.namelist()
+          assert names, "empty apworld"
+          assert all(n.startswith("smb3/") for n in names), "bad top-level dir"
+          assert "smb3/archipelago.json" in names, "missing manifest"
+          for req in ("smb3/data/basepatch.bsdiff4", "smb3/data/basepatch_hub.bsdiff4"):
+              assert req in names, f"missing {req}"
+          assert not any("/test/" in n or "/patch/" in n or "__pycache__" in n
+                         for n in names), "dev files leaked into the build"
+          print(f"OK: {len(names)} entries")
+          PY
+
+      - name: Upload workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: smb3-apworld
+          path: dist/smb3.apworld
+
+      - name: Publish GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/smb3.apworld
+          generate_release_notes: true
+          body: |
+            ## Super Mario Bros. 3 APWorld — ${{ github.ref_name }}
+
+            Download **`smb3.apworld`** below and drop it into your Archipelago
+            `custom_worlds/` folder (Windows: `C:\ProgramData\Archipelago\custom_worlds\`;
+            or `worlds/` under your Archipelago install). Restart the launcher / client.
+
+            You supply your own legally obtained **Super Mario Bros. 3 (USA) (PRG1)** ROM —
+            no ROM is included. Set its path in the Archipelago host settings
+            (`smb3_options: rom_file:`) to generate the patched game.
+
+            See the release notes below for what changed.
