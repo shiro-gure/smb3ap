@@ -37,7 +37,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-15-unlocked-cmd"
+CLIENT_REV = "2026-08-22-access-debug"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -327,6 +327,19 @@ for (_w, _off, _bit, _base) in gated_panels():
     _lid = location_name_to_id.get(_base)
     if _lid is not None:
         _PANEL_CHECK_LOCID[(_w, _off, _bit)] = _lid
+
+
+_MAP_COMPLETE_Y = (0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80)
+_MAP_COMPLETE_BIT = (0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01)
+
+
+def _row_bit_from_y(world_map_y: int):
+    """The Map_CompleteBit for a player's World_Map_Y, matching the ROM (prg011.asm:
+    4586-4599): find Y in Map_CompleteY -> that row's bit; no match -> bottom row ($01)."""
+    for i, yv in enumerate(_MAP_COMPLETE_Y):
+        if world_map_y == yv:
+            return _MAP_COMPLETE_BIT[i]
+    return _MAP_COMPLETE_BIT[7]
 
 
 def desired_lock_bytes(world: int, unlocked_panels: "AbstractSet[tuple]",
@@ -791,12 +804,26 @@ class SMB3Client(BizHawkClient):
                 if unlock_flag[0] != 0x01:
                     writes.append((MAP_UNLOCK_FLAG, [0x01], DOMAIN))
                 if writes:
-                    await guarded_write(
+                    ok = await guarded_write(
                         ctx.bizhawk_ctx, writes,
                         # Guard on the values we read so a concurrent game write aborts it.
                         [(MAP_UNLOCK_BITS, list(unlock_bits), DOMAIN),
                          (MAP_UNLOCK_FLAG, list(unlock_flag), DOMAIN)],
                     )
+                    if self.debug:
+                        logger.info("SMB3[access]: W%d wrote flag=%s bits=%s ok=%s "
+                                    "(had flag=$%02X)",
+                                    world, any(a == MAP_UNLOCK_FLAG for a, *_ in writes),
+                                    want is not None, ok, unlock_flag[0])
+                if self.debug:
+                    # Show what the gate will see for the panel under the player RIGHT NOW.
+                    off = (map_xhi[0] << 4) | (map_x[0] >> 4)
+                    row_bit = _row_bit_from_y(map_y[0])
+                    locked = (off < len(unlock_bits)) and bool(unlock_bits[off] & row_bit)
+                    logger.info("SMB3[access]: player W%d off=$%02X ybit=$%02X flag=$%02X "
+                                "-> %s (unlocked_panels=%d)", world, off, row_bit,
+                                unlock_flag[0], "LOCKED" if locked else "open",
+                                len(self._unlocked_panels))
 
             # --- victory --- (AP dedups server-side, sets finished_game on confirm)
             if not ctx.finished_game and rescue[0] != 0:
