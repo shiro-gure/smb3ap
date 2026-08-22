@@ -8,8 +8,9 @@ from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
-    BASE_ID, BOWSERS_CASTLE, access_item_names, level_check_location_names,
-    level_check_locations_for_world, location_name_to_id, location_table,
+    BASE_ID, BOWSERS_CASTLE, access_item_names, level_access_item_names,
+    level_check_location_names, level_check_locations_for_world,
+    location_name_to_id, location_table,
 )
 from .Options import SMB3Options, smb3_option_groups
 from .Presets import smb3_options_presets
@@ -146,9 +147,24 @@ class SMB3World(World):
         # those slots (they replace filler, keeping total items == placed locations so the
         # multiworld stays balanced). generate_early guarantees level_checks is on here,
         # so all 89 gated panels' clear-checks are placed and there's room for them.
+        #
+        # BOOTSTRAP: with level_access, the only checks reachable with no items are the
+        # airships/Bowser — but you can't physically reach an airship without playing
+        # (locked) levels. So we PRECOLLECT a few random numbered-level Access items into
+        # the starting inventory (levels only, so you begin with a real playable level).
+        # Those items are already "found", so they're NOT also placed in the pool; filler
+        # backfills their slots to keep the pool balanced.
         pool = []
         if self.options.level_access:
-            pool += [self.create_item(name) for name in access_item_names()]
+            access_names = list(access_item_names())
+            n_start = min(int(self.options.level_access_starting_unlocks),
+                          len(level_access_item_names()))
+            starters = self.random.sample(level_access_item_names(), n_start)
+            for name in starters:
+                self.multiworld.push_precollected(self.create_item(name))
+            starter_set = set(starters)
+            pool += [self.create_item(name) for name in access_names
+                     if name not in starter_set]
         remaining = placed_count - len(pool)
         pool += [self.create_item(self.get_filler_item_name()) for _ in range(remaining)]
         self.multiworld.itempool += pool

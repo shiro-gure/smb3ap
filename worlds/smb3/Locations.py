@@ -154,9 +154,12 @@ def fortress_panel_location_name(world: int, index: int) -> str:
 # clear-CHECK location (levels/toad houses from PANELS; fortress panels named by index).
 # Access item name = base_location_name + ' Access'. Built in a stable, sorted order.
 _gated_panels: List[tuple] = []  # (world, offset, bit, base_location_name)
+_level_access_items: List[str] = []  # Access items for numbered LEVELS only, stable order
 for (_w, _off, _bit), (_kind, _pname) in sorted(PANELS.items()):
     if _kind == "level":
-        _gated_panels.append((_w, _off, _bit, level_location_name(_w, _pname)))
+        _base = level_location_name(_w, _pname)
+        _gated_panels.append((_w, _off, _bit, _base))
+        _level_access_items.append(access_item_name(_base))
     elif _kind == "toad_house":
         _gated_panels.append((_w, _off, _bit, _pname))
 # Fortress panels: index within world by sorted (offset,bit) order.
@@ -174,6 +177,12 @@ def gated_panels() -> List[tuple]:
 def access_item_names() -> List[str]:
     """All Access item names (one per gated panel), stable order."""
     return [access_item_name(base) for (_w, _o, _b, base) in _gated_panels]
+
+
+def level_access_item_names() -> List[str]:
+    """Access items for numbered LEVELS only (not Toad Houses / fortresses), stable order.
+    Used to pick the starting-unlocked levels so the run always begins playable."""
+    return list(_level_access_items)
 
 
 # Access item name -> stable code (offset from BASE_ID, applied in Items.py).

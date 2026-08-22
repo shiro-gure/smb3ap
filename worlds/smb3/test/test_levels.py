@@ -434,11 +434,15 @@ class TestLevelAccessOn(SMB3TestBase):
                 if l.address is not None]
         self.assertEqual(len(self.multiworld.itempool), len(real))
 
-    def test_all_access_items_in_pool(self) -> None:
+    def test_all_access_items_placed_or_precollected(self) -> None:
+        # Every Access item exists exactly once across the pool + starting inventory
+        # (the starting-unlock levels are precollected, not in the pool).
         from ..Locations import access_item_names
         pool = {i.name for i in self.multiworld.itempool}
+        pre = {i.name for i in self.multiworld.precollected_items[self.player]}
         for name in access_item_names():
-            self.assertIn(name, pool)
+            self.assertTrue(name in pool or name in pre,
+                            f"{name} neither in pool nor precollected")
 
     def test_region_graph_is_hub_and_spoke(self) -> None:
         # Every World region connects directly from Menu (not the linear chain).
@@ -449,12 +453,58 @@ class TestLevelAccessOn(SMB3TestBase):
 
     def test_check_gated_on_access_item(self) -> None:
         # A level's clear-check is not reachable without its Access item, and is with it.
-        from ..Locations import access_item_name
-        loc = self.multiworld.get_location("World 1 Level 1-1", self.player)
-        base = self.multiworld.state.copy()
-        self.assertFalse(loc.can_reach(base))
-        base.collect(self.world.create_item(access_item_name("World 1 Level 1-1")))
-        self.assertTrue(loc.can_reach(base))
+        # Pick a level that ISN'T one of the precollected starting unlocks.
+        from ..Locations import access_item_name, level_access_item_names
+        pre = {i.name for i in self.multiworld.precollected_items[self.player]}
+        target = next(n for n in level_access_item_names() if n not in pre)
+        base_loc = target[:-len(" Access")]
+        loc = self.multiworld.get_location(base_loc, self.player)
+        from BaseClasses import CollectionState
+        empty = CollectionState(self.multiworld)  # no precollected auto-applied here
+        self.assertFalse(loc.can_reach(empty))
+        empty.collect(self.world.create_item(target))
+        self.assertTrue(loc.can_reach(empty))
+
+
+class TestLevelAccessStartingUnlocks(SMB3TestBase):
+    """The bootstrap: N random numbered-level Access items start in the inventory."""
+    options = {"level_access": 1, "hub_world": 1, "level_checks": 1,
+               "level_access_starting_unlocks": 3}
+
+    def test_precollects_that_many_levels(self) -> None:
+        pre = [i for i in self.multiworld.precollected_items[self.player]
+               if i.name.endswith(" Access")]
+        self.assertEqual(len(pre), 3)
+
+    def test_starters_are_levels_only(self) -> None:
+        pre = [i.name for i in self.multiworld.precollected_items[self.player]
+               if i.name.endswith(" Access")]
+        for name in pre:
+            self.assertIn(" Level ", name,
+                          f"starting unlock {name!r} must be a numbered level")
+
+    def test_pool_still_balances(self) -> None:
+        # Precollected items are extra (not on locations); the pool still == locations.
+        real = [l for l in self.multiworld.get_locations(self.player)
+                if l.address is not None]
+        self.assertEqual(len(self.multiworld.itempool), len(real))
+
+    def test_precollected_not_also_in_pool(self) -> None:
+        pre = {i.name for i in self.multiworld.precollected_items[self.player]
+               if i.name.endswith(" Access")}
+        pool = [i.name for i in self.multiworld.itempool if i.name in pre]
+        self.assertEqual(pool, [], "a precollected starter must not also be in the pool")
+
+    def test_a_starting_level_is_immediately_reachable(self) -> None:
+        # At least one starting level's clear-check is reachable from the start state
+        # (so the run is actually playable from turn 1).
+        pre = [i.name[:-len(" Access")]
+               for i in self.multiworld.precollected_items[self.player]
+               if i.name.endswith(" Access")]
+        state = self.multiworld.get_all_state(False)
+        reachable = {l.name for l in self.multiworld.get_locations(self.player)
+                     if l.can_reach(state)}
+        self.assertTrue(any(base in reachable for base in pre))
 
 
 class TestLevelAccessValidation(SMB3TestBase):

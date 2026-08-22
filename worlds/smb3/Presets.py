@@ -29,4 +29,14 @@ smb3_options_presets: Dict[str, Dict[str, Any]] = {
         "level_checks": True,
         "hub_world": True,
     },
+    # Full stage-select randomizer: hub travel + every level a check + entry gated
+    # behind per-level Access items (MM2/MM3 style). Starts with 1 level unlocked.
+    "Hub / Level Access": {
+        "goal": "bowser",
+        "item_model": "filler_only",
+        "level_checks": True,
+        "hub_world": True,
+        "level_access": True,
+        "level_access_starting_unlocks": 1,
+    },
 }

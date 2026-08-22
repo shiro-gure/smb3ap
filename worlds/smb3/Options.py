@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from Options import Choice, OptionGroup, PerGameCommonOptions, Toggle
+from Options import Choice, OptionGroup, PerGameCommonOptions, Range, Toggle
 
 
 class Goal(Choice):
@@ -54,6 +54,21 @@ class LevelAccess(Toggle):
     display_name = "Level Access (entry gating)"
 
 
+class LevelAccessStartingUnlocks(Range):
+    """How many numbered levels start already UNLOCKED (only matters with Level Access).
+
+    With Level Access on, you can't enter a level until its Access item arrives — so you
+    need at least one level open at the start to bootstrap the run. This many random
+    numbered-level Access items are placed in your STARTING inventory. Levels only (not
+    Toad Houses or fortresses), so you always begin with a real level you can play.
+    Default 1; raise it for a gentler / more open start.
+    """
+    display_name = "Level Access: starting unlocked levels"
+    range_start = 1
+    range_end = 10
+    default = 1
+
+
 class HubWorld(Toggle):
     """Start in World 9 (the Warp Zone) as a travel hub instead of World 1.
 
@@ -73,6 +88,7 @@ class SMB3Options(PerGameCommonOptions):
     item_model: ItemModel
     level_checks: LevelChecks
     level_access: LevelAccess
+    level_access_starting_unlocks: LevelAccessStartingUnlocks
     hub_world: HubWorld
 
 
@@ -88,6 +104,7 @@ smb3_option_groups = [
     OptionGroup("Locations", [
         LevelChecks,
         LevelAccess,
+        LevelAccessStartingUnlocks,
     ]),
     OptionGroup("World", [
         HubWorld,
