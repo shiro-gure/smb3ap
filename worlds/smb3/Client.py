@@ -37,7 +37,7 @@ logger = logging.getLogger("SMB3")
 
 # Build/revision stamp — bump on each client change so the loaded build is
 # unambiguous in the log (catches a stale apworld on the play machine).
-CLIENT_REV = "2026-08-22-access-debug"
+CLIENT_REV = "2026-08-23-access-onmap-only"
 
 # --- RAM addresses (resolved from disasm/, authoritative on PRG1) ---
 # Airships have NO persistent completion bit (the airship's Map_Completions branch
@@ -81,6 +81,13 @@ MAP_COMPLETIONS_LEN = 0x40
 # travel, without the player entering a level. LevLoad_Unused1 ($0701), unused in
 # vanilla. Harmless on an unpatched ROM (nothing reads it).
 MAP_REPAINT_REQ = 0x0701
+# Level_Tileset ($070A): 0 while on the OVERWORLD MAP, nonzero inside a level/bonus game
+# (the map-load tail sets it to 0, prg030.asm:580/667). CRITICAL for level_access: the
+# unlock bitfield lives in the $05xx "World Map context" page, which is a UNION with
+# in-level object RAM (e.g. Level_TilesetIdx = $0560 sits inside our $0550-$057F window).
+# Writing the bitfield while in a level corrupts live level state (froze the player /
+# forced a frog suit / reverted power). So we ONLY write it when Level_Tileset == 0.
+LEVEL_TILESET = 0x070A
 WORLD_MAP_TILE = 0x00E5        # tile under the player on the world map
 # Player overworld position (per-player arrays; player 0 = Mario). Logged in the
 # debug heartbeat to read exact hub coordinates while standing on a pipe.
@@ -568,7 +575,7 @@ class SMB3Client(BizHawkClient):
         try:
             object_ids, wand_state, completions, world_map_tile, world_num, \
                 rescue, lives, map_x, map_y, map_xhi, map_objects, unlock_bits, \
-                unlock_flag = await read(ctx.bizhawk_ctx, [
+                unlock_flag, level_tileset = await read(ctx.bizhawk_ctx, [
                     (LEVEL_OBJECTID, LEVEL_OBJECTID_LEN, DOMAIN),
                     (LEVEL_GETWANDSTATE, 1, DOMAIN),
                     (MAP_COMPLETIONS, MAP_COMPLETIONS_LEN, DOMAIN),
@@ -582,6 +589,7 @@ class SMB3Client(BizHawkClient):
                     (MAP_OBJECT_IDS, MAP_OBJECT_IDS_LEN, DOMAIN),
                     (MAP_UNLOCK_BITS, MAP_UNLOCK_BITS_LEN, DOMAIN),
                     (MAP_UNLOCK_FLAG, 1, DOMAIN),
+                    (LEVEL_TILESET, 1, DOMAIN),
                 ])
         except RequestFailedError as exc:
             logger.warning("SMB3 read failed (will retry): %s", exc)
@@ -779,12 +787,13 @@ class SMB3Client(BizHawkClient):
             self._prev_objects_world = (world, cur_objects)
 
             # --- level access: arm the gate + write this world's "unlocked" bitfield ---
-            # Only when this slot enabled level_access (from slot_data). Rebuild the
-            # unlocked-panel set from received "… Access" items (idempotent), then write
-            # the CURRENT world's unlocked bits (authoritative image, 1 = unlocked) so the
-            # entry-gate ROM hook can read them, and set the ACTIVE flag so the hook
-            # enforces. On a level_access-off game we never touch either, so entry is never
-            # wrongly blocked (the hook stays inert with its flag clear).
+            # Only when this slot enabled level_access (from slot_data) AND we're on the
+            # OVERWORLD MAP (Level_Tileset == 0). The bitfield region ($0550-$057F) is a
+            # union that holds LIVE level state inside a level (Level_TilesetIdx=$0560 etc.),
+            # so writing it in-level corrupts the game (froze/frog-suited the player). On
+            # the map that RAM is free. We still rebuild the unlocked set every pass (cheap,
+            # drives logging), but only WRITE RAM when on the map.
+            on_overworld_map = level_tileset[0] == 0
             if self._level_access:
                 self._unlocked_panels = {
                     _ACCESS_ID_TO_PANEL[it.item]
@@ -797,25 +806,28 @@ class SMB3Client(BizHawkClient):
                                 _PANEL_DISPLAY_NAME.get(panel, str(panel)))
                 self._logged_unlocks |= self._unlocked_panels
                 world = world_num[0] + 1
-                want = desired_lock_bytes(world, self._unlocked_panels, unlock_bits)
-                writes = []
-                if want is not None:
-                    writes.append((MAP_UNLOCK_BITS, list(want), DOMAIN))
-                if unlock_flag[0] != 0x01:
-                    writes.append((MAP_UNLOCK_FLAG, [0x01], DOMAIN))
-                if writes:
-                    ok = await guarded_write(
-                        ctx.bizhawk_ctx, writes,
-                        # Guard on the values we read so a concurrent game write aborts it.
-                        [(MAP_UNLOCK_BITS, list(unlock_bits), DOMAIN),
-                         (MAP_UNLOCK_FLAG, list(unlock_flag), DOMAIN)],
-                    )
-                    if self.debug:
-                        logger.info("SMB3[access]: W%d wrote flag=%s bits=%s ok=%s "
-                                    "(had flag=$%02X)",
-                                    world, any(a == MAP_UNLOCK_FLAG for a, *_ in writes),
-                                    want is not None, ok, unlock_flag[0])
-                if self.debug:
+                # ONLY write the RAM bitfield/flag while on the overworld map — writing it
+                # inside a level corrupts live level state (frog-suit / freeze / power loss).
+                if on_overworld_map:
+                    want = desired_lock_bytes(world, self._unlocked_panels, unlock_bits)
+                    writes = []
+                    if want is not None:
+                        writes.append((MAP_UNLOCK_BITS, list(want), DOMAIN))
+                    if unlock_flag[0] != 0x01:
+                        writes.append((MAP_UNLOCK_FLAG, [0x01], DOMAIN))
+                    if writes:
+                        ok = await guarded_write(
+                            ctx.bizhawk_ctx, writes,
+                            # Guard on the values we read so a concurrent game write aborts.
+                            [(MAP_UNLOCK_BITS, list(unlock_bits), DOMAIN),
+                             (MAP_UNLOCK_FLAG, list(unlock_flag), DOMAIN)],
+                        )
+                        if self.debug:
+                            logger.info("SMB3[access]: W%d wrote flag=%s bits=%s ok=%s "
+                                        "(had flag=$%02X)", world,
+                                        any(a == MAP_UNLOCK_FLAG for a, *_ in writes),
+                                        want is not None, ok, unlock_flag[0])
+                if self.debug and on_overworld_map:
                     # Show what the gate will see for the panel under the player RIGHT NOW.
                     off = (map_xhi[0] << 4) | (map_x[0] >> 4)
                     row_bit = _row_bit_from_y(map_y[0])
