@@ -452,11 +452,15 @@ class TestLevelAccessOn(SMB3TestBase):
             self.assertIn(f"World {w}", menu_targets)
 
     def test_check_gated_on_access_item(self) -> None:
-        # A level's clear-check is not reachable without its Access item, and is with it.
-        # Pick a level that ISN'T one of the precollected starting unlocks.
-        from ..Locations import access_item_name, level_access_item_names
+        # A level's clear-check is not reachable without its Access item, and IS with it.
+        # Pick a level that isn't a starting unlock AND isn't fortress-gated (so its Access
+        # item alone suffices) — fortress-gated levels are covered by their own test.
+        from ..Locations import (access_item_name, level_access_item_names,
+                                  required_fortress_events)
         pre = {i.name for i in self.multiworld.precollected_items[self.player]}
-        target = next(n for n in level_access_item_names() if n not in pre)
+        target = next(n for n in level_access_item_names()
+                      if n not in pre
+                      and not required_fortress_events(n[:-len(" Access")]))
         base_loc = target[:-len(" Access")]
         loc = self.multiworld.get_location(base_loc, self.player)
         from BaseClasses import CollectionState
@@ -464,6 +468,22 @@ class TestLevelAccessOn(SMB3TestBase):
         self.assertFalse(loc.can_reach(empty))
         empty.collect(self.world.create_item(target))
         self.assertTrue(loc.can_reach(empty))
+
+    def test_fortress_gated_level_needs_fortress(self) -> None:
+        # A fortress-gated level (e.g. World 6 6-5 behind 6-F1) needs its Access item AND
+        # the gating fortress beaten; access alone is not enough.
+        from BaseClasses import CollectionState
+        from ..Locations import access_item_name, required_fortress_events
+        base = "World 6 Level 6-5"
+        events = required_fortress_events(base)
+        self.assertTrue(events, "6-5 should be fortress-gated")
+        loc = self.multiworld.get_location(base, self.player)
+        st = CollectionState(self.multiworld)
+        st.collect(self.world.create_item(access_item_name(base)), prevent_sweep=True)
+        self.assertFalse(loc.can_reach(st), "access alone must not reach a gated level")
+        for ev in events:
+            st.collect(self.world.create_event(ev), prevent_sweep=True)
+        self.assertTrue(loc.can_reach(st), "access + fortress beaten must reach it")
 
 
 class TestLevelAccessStartingUnlocks(SMB3TestBase):

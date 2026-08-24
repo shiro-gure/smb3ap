@@ -8,7 +8,8 @@ from worlds.AutoWorld import World, WebWorld
 
 from .Items import filler_item_names, item_table
 from .Locations import (
-    BASE_ID, BOWSERS_CASTLE, access_item_names, level_access_item_names,
+    BASE_ID, BOWSERS_CASTLE, access_item_names, all_required_fortress_locations,
+    fortress_beaten_event_name, level_access_item_names,
     level_check_location_names, level_check_locations_for_world,
     location_name_to_id, location_table,
 )
@@ -133,6 +134,20 @@ class SMB3World(World):
         # Victory: beating Bowser's Castle. Locked event, excluded from the pool.
         victory = self.get_location(BOWSERS_CASTLE)
         victory.place_locked_item(self.create_event("Victory"))
+
+        # level_access: fortress-beaten EVENTS for fortresses that gate a path (World 6
+        # etc.). Each is an event location in the fortress's world region, holding a
+        # "<fortress> Beaten (event)" item; downstream levels require it in Rules. The
+        # event location's access rule (its own Access item + upstream chain) is set in
+        # set_rules. This lets logic model "you must beat 6-F1 to reach 6-5".
+        if self.options.level_access:
+            for fort_loc in all_required_fortress_locations():
+                world_num = int(fort_loc.split()[1])
+                region = self.get_region(f"World {world_num}")
+                ev_name = fortress_beaten_event_name(fort_loc)
+                ev_loc = SMB3Location(self.player, ev_name, None, region)
+                region.locations.append(ev_loc)
+                ev_loc.place_locked_item(self.create_event(ev_name))
 
     def create_items(self) -> None:
         # Model A: one item per real (id-bearing) location actually PLACED.
