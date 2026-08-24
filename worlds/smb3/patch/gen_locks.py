@@ -390,16 +390,27 @@ def emit(all_locks: dict) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+# Worlds whose fortress locks genuinely DEAD-END the path (no alternate route), verified
+# in-game. Only these are gated. The flood-fill also flags World 1/2 (vanilla fortress
+# gates), but in practice those worlds are traversable, so we exclude them. Add a world
+# here only after confirming in-game that a fortress there actually blocks progression.
+GATED_WORLDS = {6}
+
+
 def main() -> None:
     all_locks = {}
     for world in range(1, 9):
         w_locks = analyze_world(world)
-        all_locks.update(w_locks)
-        print(f"World {world}: {len(w_locks)} gated panels")
-        for base, reqs in sorted(w_locks.items()):
-            print(f"    {base}  <-  {reqs}")
+        if world in GATED_WORLDS:
+            all_locks.update(w_locks)
+        status = "GATED" if world in GATED_WORLDS else "traversable (not gated)"
+        print(f"World {world}: {len(w_locks)} candidate gated panels — {status}")
+        if world in GATED_WORLDS:
+            for base, reqs in sorted(w_locks.items()):
+                print(f"    {base}  <-  {reqs}")
     emit(all_locks)
-    print(f"\nwrote {OUT}: {len(all_locks)} gated panels")
+    print(f"\nwrote {OUT}: {len(all_locks)} gated panels "
+          f"(worlds gated: {sorted(GATED_WORLDS)})")
 
 
 if __name__ == "__main__":

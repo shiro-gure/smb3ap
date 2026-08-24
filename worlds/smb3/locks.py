@@ -8,11 +8,6 @@ unreachable panel. Regenerate with gen_locks.py."""
 
 # base location name -> [required 'World N Fortress K - Cleared' events]
 PANEL_REQUIRES_FORTRESS = {
-    'World 1 Level 1-5': ['World 1 Fortress 1 - Cleared'],
-    'World 1 Level 1-6': ['World 1 Fortress 1 - Cleared'],
-    'World 1 Toad House 2': ['World 1 Fortress 1 - Cleared'],
-    'World 2 Level 2-3': ['World 2 Fortress 1 - Cleared'],
-    'World 2 Toad House 2': ['World 2 Fortress 1 - Cleared'],
     'World 6 Fortress 2 - Cleared': ['World 6 Fortress 1 - Cleared'],
     'World 6 Fortress 3 - Cleared': ['World 6 Fortress 1 - Cleared', 'World 6 Fortress 2 - Cleared'],
     'World 6 Level 6-10': ['World 6 Fortress 1 - Cleared', 'World 6 Fortress 2 - Cleared'],
